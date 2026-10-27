@@ -36,6 +36,7 @@ Signed-off-by: Your Name <you@example.com>
 - **Tests:**
   - Use the fake decider in unit tests; never call hosted models in CI.
   - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.
+- **Product only:** the repo holds the Jevy packages. Please don't add example apps or site-specific code (for example for Uniswap). Demos are recorded videos kept outside the repo, and package tests use small fixtures.
 - **Scope:** v0.1 is Playwright only. Please discuss Cypress or API-level adapters in an issue first. Mobile is not planned.
 - **Core principles a PR must not break:**
   - No silent self-healing.

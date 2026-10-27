@@ -2,9 +2,11 @@
 
 Status: **design stage.** Jevy is a personal project with one maintainer (Adam Gencel). All durations are *estimates* assuming roughly full-time work on it; part-time work stretches them proportionally. Each milestone lists its exit criteria. Scope: Playwright only for v0.1; API-level tests and Cypress come later (unscheduled); mobile is not planned.
 
-## v0.1: levels 1 and 2, plus a wallet-flow example
+## v0.1: levels 1 and 2, plus the Web3 wallet pack
 
-Estimated total: about 6–9 weeks *(estimate)*.
+The repo contains only the product packages. Demos are recorded videos made outside the repo.
+
+Estimated total: about 6–8 weeks *(estimate)*. This is slightly shorter than before: there is no in-repo example app or fork-compatibility spike, and recording the demos is smaller work.
 
 | # | Milestone | Scope | Exit criteria |
 |---|---|---|---|
@@ -14,12 +16,12 @@ Estimated total: about 6–9 weeks *(estimate)*.
 | M3 | Deciders | `deciders-jev` (pinned `jev-1.14.0`, `TYPESAFE_API_KEY`, base-URL allow-list, alias rejection), `deciders-kev` (laptop default `kev-4b@v1.0`, *estimate*; `kev-0.8b@v1.0` for smaller machines), `deciders-llm` (provider-agnostic, user-supplied adapter, structured output and validation), fake decider for tests; per-project and per-test decider selection | Contract test suite passes for all three adapters plus the fake; switching Jev to Kev is a one-line config change; Kev-4B runs on a MacBook within an acceptable latency budget (to measure) |
 | M4 | Playwright plugin | `test`/`expect` wrappers, `toSatisfy` with three verdicts, reporter showing `needs-review`, CI policy (warn on PRs, fail on main, configurable) | Example suite: known-good pages pass, known-bad pages fail, ambiguous pages are `needs-review` |
 | M5 | Locator repair | Candidate selection on locator failure, unified-diff suggestion in the report and an optional patch file; no source edits | A renamed button produces a correct one-line diff; the test is still reported as failing or `needs-review` |
-| M6 | Recorder (`jevy record`) | LLM planning once, per-step action/element choice, interactive pause on low confidence, spec emission with role-based locators, numeric checks as code assertions | 3 example goals on a demo app produce specs that pass in `replay` mode and read like hand-written Playwright |
+| M6 | Recorder (`jevy record`) | LLM planning once, per-step action/element choice, interactive pause on low confidence, spec emission with role-based locators, numeric checks as code assertions | 3 goals on a small fixture app inside the package tests produce specs that pass in `replay` mode and read like hand-written Playwright |
 | M7 | Eval (`jevy eval`) + public dataset | Case schema, metrics (accuracy, TPR/TNR, calibration, latency, cost, repeat variance), threshold suggestion, acceptance-rate tracking for advisory steps (70% bar), markdown/JSON report; label and publish about 200 cases from public apps only (Uniswap interface and others) | Public dataset published in the repo; report comparing Jev, Kev and an LLM is reproducible by anyone; default decider and thresholds chosen from it |
-| M8 | Web3 wallet pack + Uniswap example | Spike first: confirm the Uniswap interface (GPL-3.0, fetched at a pinned commit, not vendored) works against a local Anvil mainnet fork. Then prompt classification, code policy, decoded-request checks with viem, mock EIP-1193 driver, and the connect → swap flow example | Connect and swap flow on the Uniswap interface recorded and replayed in CI against Anvil; balances asserted with viem; a value-moving request outside the policy stops the run |
-| M9 | Release 0.1.0 | Docs site or README pass, examples, npm publish via CI with provenance | Fresh-machine quickstart for levels 1 and 2 works from the README |
+| M8 | Web3 wallet pack + record demo videos on public web3 sites (Uniswap first) | Generic pack: prompt classification, code policy, decoded-request checks with viem, mock EIP-1193 driver, user-configured network (local Anvil fork or testnet), mainnet signing refused by default. Then record demo videos outside the repo with Playwright video and trace: Uniswap web app first, in testnet mode (Ethereum Sepolia or Unichain Sepolia) or stopping at the confirm screen with the signature rejected. About 1 week for the pack plus 2–3 days for demos *(estimate)* | Pack: connect, sign and send flows pass against a fixture dApp page on Anvil and replay in CI; a value-moving request outside the policy stops the run; mainnet signing is refused without the explicit flag. Demos: at least one Uniswap video, testnet funds only or signature rejected, with no key visible, ready for the README |
+| M9 | Release 0.1.0 | Docs site or README pass (setup guide for your own app, including web3 wallet, RPC and testnet config), demo videos embedded, npm publish via CI with provenance | Fresh-machine quickstart for levels 1 and 2 and the web3 config works from the README on a user's own app |
 
-**Order.** M0–M3 come first and in that order. M4–M5 and M6 can proceed in parallel. M7 should start early because it decides the default decider. M8 depends on M6.
+**Order.** M0–M3 come first and in that order. M4–M5 and M6 can proceed in parallel. M7 should start early because it decides the default decider. M8 depends on M6, and its demo videos depend on M8's pack.
 
 ## v0.2: properties, invariants and triage
 

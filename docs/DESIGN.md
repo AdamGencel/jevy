@@ -10,7 +10,8 @@ Status: **design stage, no implementation.** This document describes intended be
 4. **Deterministic CI.** Every AI decision is recorded and replayed. Re-query only when the relevant part of the page changed.
 5. **Swappable models.** One `Decider` interface. Jev (hosted), Kev (local, open-weight) and generic LLM adapters ship from day one. Switching between Jev and Kev is a one-line config change, per project or per test.
 6. **Measured trust.** An `eval` command measures each decider on labelled cases (a published public set, plus the user's own) and recommends thresholds.
-7. **Web3 as the flagship example.** Wallet pop-ups are first-class test objects. The signing policy lives in code, and chain state is checked in code.
+7. **Web3 as the flagship feature.** Wallet pop-ups are first-class test objects in any dApp the user tests. The signing policy lives in code, and chain state is checked in code.
+8. **Product only.** The repo ships the packages. Users install them and configure Jevy for their own app, wallet, RPC and network. Demos are recorded videos, not code in the repo (section 5.4).
 
 ## 2. Non-goals
 
@@ -19,6 +20,7 @@ Status: **design stage, no implementation.** This document describes intended be
 - **No silent self-healing.** The research found silent heals hide regressions, and Playwright's own healer can loosen assertions or add `test.fixme()`.
 - **No AI judgement of numbers, amounts, balances, dates, gas or chain state.** Jev's own docs say it is weak at maths, counting and date comparison ("keep the arithmetic in code").
 - **No hosted cloud, dashboard or vendor test format.** Output is plain Playwright TypeScript.
+- **No bundled example apps or site-specific code.** No Uniswap or other third-party app code lives in the repo. Package tests use small fixtures inside each package.
 - **Not an AI auditor, and no replacement for human review or audits.**
 - **No natural-language tests at runtime.** Natural language is an authoring input. What runs in CI is code plus recorded decisions.
 - **No autonomous exploratory testing in v0.1.** The evidence rates it "promising, not a merge gate": the best of 15 agents found and fixed 59.0% of bugs on SWEeper-Bench.
@@ -102,13 +104,12 @@ packages/
   deciders-jev/    @jevy/deciders-jev   TypeSafe AI adapter (wraps @typesafe-ai/sdk)
   deciders-kev/    @jevy/deciders-kev   Kev adapter (same /v1/systemone wire shape, local URL)
   deciders-llm/    @jevy/deciders-llm   generic LLM judge (structured output; provider-agnostic)
-  web3/            @jevy/web3           wallet prompt classes, policy, EIP-1193 mock, Anvil + viem helpers
-examples/
-  basic-record/    level-1 example
-  plugin/          level-2 example
-  wallet-dapp/     wallet-flow example: Uniswap interface (fetched at a pinned commit, not vendored) on a local Anvil fork
-eval/              labelled-case schema + published public seed dataset (~200 cases from public apps)
+  web3/            @jevy/web3           wallet prompt classes, policy, EIP-1193 mock, optional Anvil fork, viem helpers
+docs/              design docs and user guides (setup for your own app, web3 config)
 ```
+
+- **Test fixtures** (minimal static pages, a tiny local dApp page for the wallet pack) live inside each package's test folder and are not published as examples.
+- **Eval.** The labelled-case schema ships with `@jevy/cli`. The public seed dataset may live in this repo or in a separate dataset repo, depending on snapshot licensing (OPEN-QUESTIONS).
 
 **Naming.** The CLI package publishes as `jevy` (bin `jevy`) and libraries as `@jevy/*`. Whether the CLI ships as the unscoped `jevy` or as `@jevy/cli` exposing a `jevy` bin depends on claiming the npm names; see OPEN-QUESTIONS. The source lives at github.com/AdamGencel/jevy (not created yet). Code is MIT.
 
@@ -182,13 +183,37 @@ type WalletPolicy = (p: { kind: WalletPromptKind; decoded: DecodedRequest }) => 
 - `decoded` holds the chain ID, recipient, value and calldata. It is parsed in code (viem) from the EIP-1193 request, never read by AI from the UI.
 - The default policy stops on `unknown` and on anything that moves value without an explicit allow rule.
 - **Two drivers:**
-  - An injected mock EIP-1193 provider with a local key on an Anvil fork: fast and CI-friendly.
-  - A real-extension driver, Synpress-style: realistic, but needs headed mode or xvfb in CI.
+  - **Mock provider (default):** an injected EIP-1193 provider, announced through EIP-6963 and `window.ethereum`. It holds a user-supplied test key and forwards reads to the user's RPC. Fast and CI-friendly.
+  - **Real extension, Synpress-style:** realistic, but needs headed mode or xvfb in CI.
+- **Network is user-configured.** Jevy ships no RPC URLs, keys or chain defaults. The user picks one of:
+  - **Local fork:** Jevy starts Anvil, forking from the user's RPC URL. Deterministic, with funds set by cheatcodes. Best for CI.
+  - **Public testnet:** the user's own RPC and a faucet-funded throwaway key, for example Ethereum Sepolia (11155111) or Unichain Sepolia (1301).
+  - **Any other chain**, with the same rules.
+- **Never mainnet signing by default.** The mock provider refuses to sign or send on known mainnet chain IDs unless `allowMainnetSigning: true` is set explicitly, and a warning is shown even then. The default policy also stops on any value-moving request without an allow rule.
+- **Keys:**
+  - Keys are read only from environment variables, for example `JEVY_TEST_PRIVATE_KEY`.
+  - Keys are redacted from decision records and reports.
+  - Use throwaway keys that never hold real funds.
 
-**v0.1 demo: the Uniswap interface on a local Anvil fork.**
-- The example fetches the open-source Uniswap interface at a pinned commit (it is GPL-3.0, so it isn't vendored), points its RPC at a local Anvil mainnet fork, and drives a connect → swap → confirm flow through the mock provider.
-- Balances and the swap result are asserted with viem reads against the fork.
-- **Unverified assumption:** how much of the interface works against a fork. It may depend on hosted Uniswap Labs services, such as routing and quote APIs, that only see real mainnet state. M8 starts with a spike to confirm this, with a fallback of disabling or stubbing those calls in the example.
+### 5.4 Demos (outside the product)
+
+Demos are recorded videos used in the README and for promotion. They are not part of the repo, and their scripts are kept outside it.
+
+- **Sites.** Real public web3 sites, Uniswap's web app first. The Uniswap app has a testnet mode for Sepolia and Unichain (per Uniswap's support docs).
+- **How they're produced:**
+  - Jevy runs against the live site with Playwright's `video: "on"` and `trace: "on"`, in a headed browser for a clean recording.
+  - The trace viewer and Jevy's reporter output (verdicts, wallet prompt kind, policy decision, decoded amounts) are shown alongside, or as captions.
+  - Each video is trimmed and captioned, and states the date and the Jevy version.
+- **Safety:**
+  - Testnet funds only, using a throwaway faucet-funded key.
+  - Or run up to the wallet confirm screen and reject the signature: the policy returns `reject`, so nothing is broadcast.
+  - Never mainnet, and never a key that has held real funds.
+  - The key comes from the environment and must not appear on screen or in traces. Check traces before publishing.
+- **Courtesy and terms:**
+  - Keep request volume low.
+  - Respect the site's terms of use.
+  - Don't imply endorsement: each video states that Jevy isn't affiliated with the site.
+- **Reproducibility.** Live sites change, so a demo is a point-in-time recording, not a test that CI depends on.
 
 ## 6. Decision cache format
 
@@ -252,8 +277,8 @@ A redaction pass that fails blocks the write.
 **Case format.** One labelled decision per line: the state (or a path to a saved snapshot), the question, the expected answer and the source app. The same schema serves the user's own cases.
 
 **Public seed dataset.**
-- About 200 labelled cases, taken only from public apps (the Uniswap interface and other public sites).
-- Published in the repo under `eval/datasets/`, so anyone can rerun the benchmark on Jev, Kev or their own LLM.
+- About 200 labelled cases, taken only from public apps (the Uniswap web app and other public sites).
+- Published so anyone can rerun the benchmark on Jev, Kev or their own LLM: in this repo, or in a separate dataset repo if the licensing of site snapshots is a concern (OPEN-QUESTIONS).
 - Snapshots are captured from public pages and run through redaction.
 - Results are reported per decider with the exact model pin, for example `jev-1.14.0` or `kev-4b@v1.0`.
 - Contributors without a Jev key can still rerun it on Kev.
@@ -291,11 +316,11 @@ A redaction pass that fails blocks the write.
   - Wallet actions go through the code policy, and `unknown` stops the run.
   - No decider output is ever executed as code.
 - **Keys and wallets.**
-  - API keys come from environment variables (`TYPESAFE_API_KEY` for Jev; the user's own variables for their LLM adapter). They are never written to the cache, reports or examples.
+  - API keys come from environment variables (`TYPESAFE_API_KEY` for Jev; the user's own variables for their LLM adapter). They are never written to the cache, reports, traces or demo recordings.
   - The repo will ship a `.gitignore` covering `.env*`, and CI will use secret storage.
   - Contributors must never commit keys; see CONTRIBUTING.
-  - The wallet pack uses throwaway keys on a local Anvil fork by default.
-  - Running against a live network requires an explicit flag, and the default policy rejects value-moving requests.
+  - The wallet pack uses user-supplied throwaway keys, from environment variables, on a network the user configures (a local fork or a testnet).
+  - Mainnet signing is refused unless `allowMainnetSigning: true` is set explicitly, and the default policy stops value-moving requests without an allow rule.
 - **Supply chain.** Pin the deciders' SDK versions. AGPL tools stay external binaries.
 - **Model drift.** Pin `jev-1.14.0`. Moving aliases are rejected by default, and a model change invalidates cache keys.
 
@@ -314,6 +339,13 @@ export default defineConfig({
   cache: { dir: ".jevy/decisions", mode: process.env.CI ? "replay" : "record" }, // or store: externalStore(...)
   ci: { needsReview: { pr: "warn", main: "fail" }, mainBranch: "main" },
   redact: [/sk_live_\w+/, { role: "textbox", name: /password/i }],
+  web3: {
+    driver: "mock",
+    chain: { id: 11155111, rpcUrlEnv: "SEPOLIA_RPC_URL" },   // or { fork: { rpcUrlEnv: "FORK_SOURCE_RPC_URL" } }
+    account: { privateKeyEnv: "JEVY_TEST_PRIVATE_KEY" },
+    policy: "./wallet-policy.ts",
+    allowMainnetSigning: false,                              // default
+  },
 });
 ```
 
@@ -324,5 +356,6 @@ Config files only. Fields will change.
 - **Jev maturity and access.** It launched 15 Sep 2026 and is in early access; the HN thread reported that signups were closed. The maintainer has a direct API key, but many users and contributors won't. Kev and the LLM adapters are the exit, and the project and its public benchmark must work without Jev.
 - **Calibration** is disputed for Jev and unknown for LLM proxies. Use `eval` and three verdicts.
 - **Competition.** Playwright's agents or vendors such as Momentic may add similar features. The differentiators are calibration, deterministic replay, the Web3 pack and plain code output.
+- **Demos depend on live sites.** A site redesign or testnet outage can break a recording session. Demos are point-in-time and never gate CI.
 - **Wallet automation is brittle.** Synpress documents headless issues. Default to the mock provider and keep the real-extension driver for smoke tests.
 - **Level 3 evidence is mostly from Python** (Hypothesis). Whether it works as well with TypeScript and fast-check is unproven.
