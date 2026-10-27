@@ -1,6 +1,6 @@
 # Jevy — Roadmap
 
-Status: **design stage.** All durations are *estimates* for roughly one full-time maintainer and will move. Each milestone lists its exit criteria.
+Status: **design stage.** Jevy is a personal project with one maintainer (Adam Gencel). All durations are *estimates* assuming roughly full-time work on it; part-time work stretches them proportionally. Each milestone lists its exit criteria. Scope: Playwright only for v0.1; API-level tests and Cypress come later (unscheduled); mobile is not planned.
 
 ## v0.1: levels 1 and 2, plus a wallet-flow example
 
@@ -8,15 +8,15 @@ Estimated total: about 6–9 weeks *(estimate)*.
 
 | # | Milestone | Scope | Exit criteria |
 |---|---|---|---|
-| M0 | Repo foundation | pnpm workspace, TS config, lint, Vitest, Changesets, GitHub Actions, licence, these docs | `pnpm build && pnpm test` green on an empty package set; npm scope and names reserved |
+| M0 | Repo foundation | Create github.com/AdamGencel/jevy; pnpm workspace, TS config, lint, Vitest, Changesets, GitHub Actions, MIT `LICENSE`, DCO sign-off check on PRs, `.gitignore` for `.env*`, these docs | `pnpm build && pnpm test` green on an empty package set; `@jevy` npm org claimed and `jevy` name reserved; TypeSafe AI brand check done (both still open) |
 | M1 | Core | `Decider` interface, question/answer/verdict types, snapshot pruning and hashing, normalisation rules, redaction, config loader | Unit tests: same page gives the same hash; cosmetic change gives the same hash; relevant change gives a new hash |
-| M2 | Decision cache | JSONL store, key scheme, `replay` / `replay-or-query` / `record` modes, `jevy cache prune` / `stats` | CI fixture run in `replay` mode makes zero network calls |
-| M3 | Deciders | `deciders-jev` (pinned `jev-1.14.0`, base-URL allow-list, alias rejection), `deciders-kev`, `deciders-llm` (structured output and validation), fake decider for tests | Contract test suite passes for all three adapters plus the fake |
-| M4 | Playwright plugin | `test`/`expect` wrappers, `toSatisfy` with three verdicts, reporter showing `needs-review` | Example suite: known-good pages pass, known-bad pages fail, ambiguous pages are `needs-review` |
+| M2 | Decision cache | JSONL store committed to git by default, redaction before write, optional external store for big suites, key scheme, `replay` / `replay-or-query` / `record` modes, `jevy cache prune` / `stats` | CI fixture run in `replay` mode makes zero network calls |
+| M3 | Deciders | `deciders-jev` (pinned `jev-1.14.0`, `TYPESAFE_API_KEY`, base-URL allow-list, alias rejection), `deciders-kev` (laptop default `kev-4b@v1.0`, *estimate*; `kev-0.8b@v1.0` for smaller machines), `deciders-llm` (provider-agnostic, user-supplied adapter, structured output and validation), fake decider for tests; per-project and per-test decider selection | Contract test suite passes for all three adapters plus the fake; switching Jev to Kev is a one-line config change; Kev-4B runs on a MacBook within an acceptable latency budget (to measure) |
+| M4 | Playwright plugin | `test`/`expect` wrappers, `toSatisfy` with three verdicts, reporter showing `needs-review`, CI policy (warn on PRs, fail on main, configurable) | Example suite: known-good pages pass, known-bad pages fail, ambiguous pages are `needs-review` |
 | M5 | Locator repair | Candidate selection on locator failure, unified-diff suggestion in the report and an optional patch file; no source edits | A renamed button produces a correct one-line diff; the test is still reported as failing or `needs-review` |
 | M6 | Recorder (`jevy record`) | LLM planning once, per-step action/element choice, interactive pause on low confidence, spec emission with role-based locators, numeric checks as code assertions | 3 example goals on a demo app produce specs that pass in `replay` mode and read like hand-written Playwright |
-| M7 | Eval (`jevy eval`) | Case schema, metrics (accuracy, TPR/TNR, calibration, latency, cost, repeat variance), threshold suggestion, markdown/JSON report | Report on a seed set of about 200 labelled cases *(estimate)* comparing Jev, Kev and LLM; default decider chosen from it |
-| M8 | Web3 wallet pack + example | Prompt classification, code policy, decoded-request checks with viem, mock EIP-1193 driver on an Anvil fork, wallet-flow example on a real dApp (choice open) | Connect, sign and send-transaction flow recorded and replayed in CI; a value-moving request outside the policy stops the run |
+| M7 | Eval (`jevy eval`) + public dataset | Case schema, metrics (accuracy, TPR/TNR, calibration, latency, cost, repeat variance), threshold suggestion, acceptance-rate tracking for advisory steps (70% bar), markdown/JSON report; label and publish about 200 cases from public apps only (Uniswap interface and others) | Public dataset published in the repo; report comparing Jev, Kev and an LLM is reproducible by anyone; default decider and thresholds chosen from it |
+| M8 | Web3 wallet pack + Uniswap example | Spike first: confirm the Uniswap interface (GPL-3.0, fetched at a pinned commit, not vendored) works against a local Anvil mainnet fork. Then prompt classification, code policy, decoded-request checks with viem, mock EIP-1193 driver, and the connect → swap flow example | Connect and swap flow on the Uniswap interface recorded and replayed in CI against Anvil; balances asserted with viem; a value-moving request outside the policy stops the run |
 | M9 | Release 0.1.0 | Docs site or README pass, examples, npm publish via CI with provenance | Fresh-machine quickstart for levels 1 and 2 works from the README |
 
 **Order.** M0–M3 come first and in that order. M4–M5 and M6 can proceed in parallel. M7 should start early because it decides the default decider. M8 depends on M6.
@@ -30,7 +30,12 @@ Estimated at about 6–8 weeks *(estimate)*.
 - **Solidity.** Generate a Chimera-style shared suite that runs in Foundry for PRs and Echidna/Medusa nightly, invoked as external binaries. Seeds are stored for replay.
 - **Ranking.** A decider ranks surviving properties for review. Humans accept or reject them.
 - **Failure triage.** Classify failing tests as app bug, flaky test, environment or data, gated on confidence and evaluated with `eval`.
-- **Pilot.** Round-trip and invariant properties on a real TypeScript SDK, for example an account-abstraction SDK. Exit criterion: at least one surviving property a maintainer would keep *(target, not a promise)*.
+- **Pilots (public, shareable):**
+  - viem (TypeScript, fast-check): round-trip properties such as ABI encode/decode, sign/recover and transaction serialize/parse.
+  - OpenZeppelin Contracts (Solidity, Foundry plus Echidna/Medusa): token and access-control invariants.
+  - Results and surviving properties are published. Upstream contributions go only through each project's normal process.
+  - Exit criterion: at least one surviving property per pilot that would plausibly be accepted upstream *(target, not a promise)*.
+- **Advisory steps** (triage, property ranking) stay on only if at least 70% of their findings are accepted.
 
 ## v0.3: Web3 depth and wider coverage
 
@@ -38,14 +43,15 @@ Estimated at about 6–10 weeks *(estimate)*.
 
 - **ERC-4337 helpers.** UserOp building and assertion, paymaster and session-key flows, and bundler receipts checked in code.
 - **Real-extension wallet driver** for smoke tests (MetaMask, Rabby), with xvfb guidance for CI.
-- **Nightly exploratory run** (optional, advisory only). An agent explores the app and files `needs-review` findings for human triage; never a merge gate.
+- **Nightly exploratory run** (optional, advisory only). An agent explores the app and files `needs-review` findings for human triage; never a merge gate. It stays on only if at least 70% of its findings are accepted as real.
 - **Vision fallback** for canvas and iframe-heavy UIs, gated behind a flag. This depends on Jev images leaving preview, or on a VLM adapter.
 - **Optional pre-deployment AI audit hook** for contracts, as triage before a human audit, with its output treated as advisory.
 - **Public benchmark** of Jevy deciders on an open labelled set, with reproducible eval reports.
 
 ## Later or unscheduled
 
-- Cypress or mobile adapters.
+- API-level tests and a Cypress adapter (planned for after v0.3; not scheduled).
+- Mobile: **not planned.**
 - Additional deciders.
 - Solidity mutation tooling.
 - An IDE helper for reviewing `needs-review` items.

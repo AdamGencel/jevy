@@ -1,12 +1,33 @@
 # Contributing to Jevy
 
-Thanks for your interest. Jevy is at the **design stage**, so there is no implementation code yet, and the most useful contributions right now are feedback on the design docs.
+Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). It is at the **design stage**: there is no implementation code yet, so the most useful contributions right now are feedback on the design docs.
 
 ## Right now
 
 - Read [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md).
-- Open an issue or discussion for design feedback. Point to the section you're commenting on.
-- Labelled eval cases (with no sensitive data) are welcome once the case schema is published (roadmap M7).
+- Open an issue or discussion on [github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy) (repository not created yet) with design feedback. Point to the section you're commenting on.
+- Labelled eval cases are welcome once the case schema is published (roadmap M7). They must come from public apps only and contain no personal or sensitive data.
+
+## Developer Certificate of Origin (DCO)
+
+Every commit must be signed off under the [Developer Certificate of Origin 1.1](https://developercertificate.org/). The sign-off certifies that you wrote the change, or otherwise have the right to submit it under the project's MIT licence. There is no CLA.
+
+Add the sign-off with `-s`:
+
+```bash
+git commit -s -m "Fix cache key normalisation"
+```
+
+This appends a line using your git `user.name` and `user.email`:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+- **Forgot it on the last commit:** `git commit --amend -s --no-edit`, then force-push your PR branch.
+- **Forgot it on several commits:** `git rebase --signoff main`, then force-push your PR branch.
+- **Check:** PRs will be checked for sign-off automatically once CI exists. Unsigned commits can't be merged.
+- **Real name:** use a real name or a consistent identity you can be contacted under.
 
 ## Once code lands (planned)
 
@@ -14,19 +35,21 @@ Thanks for your interest. Jevy is at the **design stage**, so there is no implem
 - **Changesets:** every user-facing change needs a changeset (`pnpm changeset`).
 - **Tests:**
   - Use the fake decider in unit tests; never call hosted models in CI.
-  - Tests that need a real decider are opt-in and read keys from environment variables.
+  - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.
+- **Scope:** v0.1 is Playwright only. Please discuss Cypress or API-level adapters in an issue first. Mobile is not planned.
 - **Core principles a PR must not break:**
   - No silent self-healing.
   - No AI judgement of numbers, amounts or chain state.
-  - Every AI decision goes through the decision cache.
+  - Every AI decision goes through the decision cache, with redaction.
   - Hosted deciders stay opt-in.
+  - No hard dependency on any LLM provider.
 - **Security:**
-  - Never commit API keys, private keys or raw page snapshots.
-  - Report vulnerabilities privately (contact to be added) rather than in public issues.
+  - Never commit API keys, private keys, seed phrases, `.env` files or raw page snapshots.
+  - Report vulnerabilities privately through GitHub's private vulnerability reporting once the repository exists, not in public issues.
 
-## Licence and sign-off
+## Licence
 
-The licence (MIT or Apache-2.0) and whether a DCO sign-off is required are still open. This file will be updated once they are decided.
+Jevy is MIT-licensed (see [LICENSE](LICENSE)). By contributing, you agree that your contributions are licensed under the same terms.
 
 ## Code of conduct
 

@@ -1,10 +1,12 @@
 # Jevy — AI-assisted testing that produces plain Playwright code
 
-> **Status: design stage.** There is no code yet. The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> **Status: design stage.** There is no code yet, and the repository ([github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy)) and the `@jevy` npm org are not created yet. The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm as a pnpm monorepo. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
-Jevy is an independent project, not affiliated with or endorsed by TypeSafe AI. Jev is one supported backend; Kev and generic LLM deciders work too.
+Jevy is an independent, personal open-source project by Adam Gencel. It is not affiliated with or endorsed by TypeSafe AI or any employer. Jev is one supported backend; Kev (local) and any LLM you plug in work too. v0.1 targets Playwright only.
 
 ## Why
 
@@ -65,6 +67,8 @@ An LLM proposes properties and invariants, which run in fast-check (TypeScript) 
 npx jevy properties propose --target packages/sdk/src   # intended, v0.2
 ```
 
+The v0.2 pilots are public OSS projects, so results can be shared: viem (TypeScript) and OpenZeppelin Contracts (Solidity).
+
 ## Web3 wallet pack (v0.1 example)
 
 `@jevy/web3` treats wallet pop-ups as test objects:
@@ -74,7 +78,7 @@ npx jevy properties propose --target packages/sdk/src   # intended, v0.2
 - Amounts, recipients and chain IDs are decoded and checked in code, never by AI.
 - Chain-state assertions run against an Anvil fork.
 
-v0.1 ships a wallet-flow example on a real dApp; which one is still open.
+v0.1 ships a wallet-flow example on the open-source Uniswap interface, running locally against an Anvil mainnet fork. The Uniswap interface is GPL-3.0, so the example fetches it at a pinned commit and never vendors its code into this MIT repo.
 
 ## Evaluate before you trust
 
@@ -83,6 +87,8 @@ npx jevy eval --cases eval/cases.jsonl --deciders jev,kev,llm
 ```
 
 This reports accuracy, true positive and true negative rates, calibration, latency and cost per decider, and suggests confidence thresholds.
+
+The project publishes a public seed dataset of about 200 labelled cases taken only from public apps (such as the Uniswap interface), so anyone can rerun the benchmark. Run `eval` on your own labelled cases too before trusting a decider on your app.
 
 ## Packages (planned)
 
@@ -98,8 +104,16 @@ This reports accuracy, true positive and true negative rates, calibration, laten
 
 ## Privacy note
 
-Hosted deciders (Jev, cloud LLMs) receive page content: accessibility trees and, if you enable them, screenshots. Jev is served from a US-hosted API, and zero data retention is enterprise-only per TypeSafe's docs. Use the Kev adapter if data must stay local. See [DESIGN.md § Security and privacy](docs/DESIGN.md#9-security-and-privacy).
+Hosted deciders (Jev, cloud LLMs) receive page content: accessibility trees and, if you enable them, screenshots. Jev is served from a US-hosted API, and zero data retention is enterprise-only per TypeSafe's docs. The intended use for Jev is staging and public apps. To keep data local, switch to Kev with one config line, per project or per test:
+
+```ts
+// jevy.config.ts (intended)
+export default defineConfig({ decider: "kev" });
+// or for one test file: test.use({ decider: "kev" });
+```
+
+API keys come from environment variables (for example `TYPESAFE_API_KEY`) and must never be committed. Decision records are redacted before they are written. See [DESIGN.md § Security and privacy](docs/DESIGN.md#9-security-and-privacy).
 
 ## Contributing and licence
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Licence to be decided (MIT or Apache-2.0); see [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md).
+MIT, see [LICENSE](LICENSE). Contributions are welcome under the Developer Certificate of Origin (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Maintainer: Adam Gencel (sole maintainer).
