@@ -1,2 +1,2 @@
-// Stub. record, eval and cache arrive in later milestones. The executable is src/bin.ts.
-export {};
+export { run } from "./cli.js";
+export type { CliResult } from "./cli.js";

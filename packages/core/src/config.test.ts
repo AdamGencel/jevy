@@ -123,10 +123,11 @@ describe("config", () => {
     ).toBe("http://127.0.0.1:8009");
   });
 
-  it("defaults cache mode from CI and refuses an external store", () => {
+  it("defaults cache mode from CI and accepts a decision store", () => {
     expect(parseConfig({}, { env: {} }).cache).toEqual({
       dir: ".jevy/decisions",
       mode: "record",
+      store: null,
     });
     expect(parseConfig({}, { env: { CI: "true" } }).cache.mode).toBe("replay");
     expect(
@@ -135,7 +136,33 @@ describe("config", () => {
         { env: { CI: "true" } },
       ).cache.mode,
     ).toBe("replay-or-query");
-    expect(() => parseConfig(raw({ cache: { store: "later" } }))).toThrow(/M2/);
+    expect(() => parseConfig(raw({ cache: { store: "later" } }))).toThrow(
+      /cache\.dir/,
+    );
+    const store = {
+      get(): Promise<null> {
+        return Promise.resolve(null);
+      },
+      put(): Promise<void> {
+        return Promise.resolve();
+      },
+      list(): Promise<readonly []> {
+        return Promise.resolve([]);
+      },
+      touch(): Promise<void> {
+        return Promise.resolve();
+      },
+      replaceAll(): Promise<void> {
+        return Promise.resolve();
+      },
+      noteReferenced(): Promise<void> {
+        return Promise.resolve();
+      },
+      referencedKeys(): Promise<ReadonlySet<string>> {
+        return Promise.resolve(new Set());
+      },
+    };
+    expect(parseConfig({ cache: { store } }).cache.store).toBe(store);
     expect(parseConfig({}).ci).toEqual({
       needsReview: { pr: "warn", main: "fail" },
       mainBranch: "main",

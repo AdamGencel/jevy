@@ -10,3 +10,9 @@ pnpm-publish-summary.json
 .env
 .env.*
 !.env.example
+
+# Decision JSONL under .jevy/decisions is meant to be committed.
+# Lock files, in-progress writes, and the last-run bookkeeping file are not.
+.jevy/**/.locks/
+.jevy/**/.last-run.json
+.jevy/**/*.tmp

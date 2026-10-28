@@ -3,6 +3,10 @@ import { isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import type { LlmAdapter } from "./decider.js";
+import {
+  DECISION_STORE_METHODS,
+  type DecisionStore,
+} from "./decision-store.js";
 import { ConfigError } from "./errors.js";
 import { isRecord } from "./guards.js";
 import { redactText } from "./redact.js";
@@ -133,6 +137,11 @@ export interface JevyConfig {
   readonly cache?: {
     readonly dir?: string;
     readonly mode?: CacheMode;
+    /**
+     * External store for large suites. When set, it is used instead of `dir`.
+     * A directory path belongs in `dir`, not here.
+     */
+    readonly store?: DecisionStore;
   };
   readonly ci?: {
     readonly needsReview?: {
@@ -182,7 +191,11 @@ export interface ResolvedJevyConfig {
     readonly llm: ResolvedLlmDecider | null;
   };
   readonly thresholds: Thresholds;
-  readonly cache: { readonly dir: string; readonly mode: CacheMode };
+  readonly cache: {
+    readonly dir: string;
+    readonly mode: CacheMode;
+    readonly store: DecisionStore | null;
+  };
   readonly ci: {
     readonly needsReview: {
       readonly pr: NeedsReviewAction;
@@ -586,15 +599,10 @@ function readCache(
   env: Readonly<Record<string, string | undefined>>,
 ): ResolvedJevyConfig["cache"] {
   if (value === undefined) {
-    return { dir: DEFAULT_CACHE_DIR, mode: cacheModeFromEnv(env) };
+    return { dir: DEFAULT_CACHE_DIR, mode: cacheModeFromEnv(env), store: null };
   }
   if (!isRecord(value)) throw new ConfigError("cache must be an object");
-  if (Object.hasOwn(value, "store")) {
-    throw new ConfigError(
-      "cache.store is not available yet. An external decision-cache store arrives in M2. Use cache.dir until then.",
-    );
-  }
-  rejectUnknown(value, ["dir", "mode"], "cache");
+  rejectUnknown(value, ["dir", "mode", "store"], "cache");
   const dir =
     value["dir"] === undefined
       ? DEFAULT_CACHE_DIR
@@ -603,7 +611,24 @@ function readCache(
     value["mode"] === undefined
       ? cacheModeFromEnv(env)
       : readEnum(value["mode"], CACHE_MODES, "cache.mode");
-  return { dir, mode };
+  const store = value["store"] === undefined ? null : readStore(value["store"]);
+  return { dir, mode, store };
+}
+
+function readStore(value: unknown): DecisionStore {
+  if (!isRecord(value)) {
+    throw new ConfigError(
+      "cache.store must be a DecisionStore. Use cache.dir for a directory.",
+    );
+  }
+  for (const name of DECISION_STORE_METHODS) {
+    if (typeof value[name] !== "function") {
+      throw new ConfigError(
+        `cache.store.${name} must be a function. Use cache.dir for a directory.`,
+      );
+    }
+  }
+  return value as unknown as DecisionStore;
 }
 
 function cacheModeFromEnv(
