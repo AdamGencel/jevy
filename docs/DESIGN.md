@@ -1,6 +1,6 @@
 # Jevy — Design
 
-Status: **design stage, no implementation.** This document describes intended behaviour. TypeScript snippets are signature sketches, not code to copy. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
+Status: **M0 scaffolding is in the repo; the behaviour below is not implemented yet.** This document describes intended behaviour. TypeScript snippets are signature sketches, not code to copy. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 

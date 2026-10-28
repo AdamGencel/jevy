@@ -33,6 +33,7 @@ Signed-off-by: Your Name <you@example.com>
 
 - **Toolchain:** Node >= 18, pnpm 10 (the version is pinned in the root `package.json` `packageManager` field), TypeScript, Vitest. From the repo root: `pnpm install`, `pnpm lint`, `pnpm typecheck`, `pnpm build` and `pnpm test`.
 - **Changesets:** every user-facing change needs a changeset (`pnpm changeset`). A change that only touches the toolchain, and does not change published behaviour, does not. Nothing in this repo publishes to npm automatically.
+- **Publishing:** every package under `packages/` is `"private": true` until the 0.1.0 release, so a stray `pnpm publish` cannot ship the stubs. Changesets can still version them. Remove `"private"` as part of the 0.1.0 release, before the first real publish. Leave `publishConfig.access` set to `"public"`.
 - **Tests:**
   - Use the fake decider in unit tests; never call hosted models in CI.
   - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.

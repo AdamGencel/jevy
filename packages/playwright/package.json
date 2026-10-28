@@ -1,5 +1,6 @@
 {
   "name": "@jevyjs/playwright",
+  "private": true,
   "version": "0.0.0",
   "description": "Playwright plugin for Jevy: semantic assertions, locator repair and the reporter",
   "license": "MIT",

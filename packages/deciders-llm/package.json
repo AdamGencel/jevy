@@ -1,5 +1,6 @@
 {
   "name": "@jevyjs/deciders-llm",
+  "private": true,
   "version": "0.0.0",
   "description": "Generic LLM-judge adapter for Jevy",
   "license": "MIT",

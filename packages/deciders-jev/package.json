@@ -1,5 +1,6 @@
 {
   "name": "@jevyjs/deciders-jev",
+  "private": true,
   "version": "0.0.0",
   "description": "TypeSafe AI Jev adapter for Jevy",
   "license": "MIT",

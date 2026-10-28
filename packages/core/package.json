@@ -1,5 +1,6 @@
 {
   "name": "@jevyjs/core",
+  "private": true,
   "version": "0.0.0",
   "description": "Decider interface, decision cache, verdicts, and config for Jevy",
   "license": "MIT",

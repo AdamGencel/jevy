@@ -1,5 +1,6 @@
 {
   "name": "@jevyjs/cli",
+  "private": true,
   "version": "0.0.1",
   "description": "CLI for Jevy. Installs the jevy command.",
   "license": "MIT",
