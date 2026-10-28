@@ -1,6 +1,6 @@
 # Contributing to Jevy
 
-Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo and the packages are stubs, so the most useful contributions right now are still feedback on the design docs.
+Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo. `@jevyjs/core` implements the M1 decision layer; the other packages are still stubs. The most useful contributions right now are still feedback on the design docs.
 
 ## Right now
 
@@ -33,7 +33,7 @@ Signed-off-by: Your Name <you@example.com>
 
 - **Toolchain:** Node >= 22 (`.nvmrc` is 22; CI also runs Node 24), pnpm 10 (the version is pinned in the root `package.json` `packageManager` field), TypeScript, Vitest. From the repo root: `pnpm install`, `pnpm lint`, `pnpm typecheck`, `pnpm build` and `pnpm test`.
 - **Changesets:** every user-facing change needs a changeset (`pnpm changeset`). A change that only touches the toolchain, and does not change published behaviour, does not. Nothing in this repo publishes to npm automatically.
-- **Publishing:** every package under `packages/` is `"private": true` until the 0.1.0 release, so a stray `pnpm publish` cannot ship the stubs. Changesets can still version them. Remove `"private"` as part of the 0.1.0 release, before the first real publish. Leave `publishConfig.access` set to `"public"`.
+- **Publishing:** every package under `packages/` is `"private": true` until the 0.1.0 release, so a stray `pnpm publish` cannot ship them. Changesets can still version them. Remove `"private"` as part of the 0.1.0 release, before the first real publish. Leave `publishConfig.access` set to `"public"`.
 - **Tests:**
   - Use the fake decider in unit tests; never call hosted models in CI.
   - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.
