@@ -1,0 +1,43 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Signed-off-by
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Check every commit for a Signed-off-by trailer
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags origin "${BASE_SHA}"
+          missing=0
+          commits="$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}")"
+          if [ -z "${commits}" ]; then
+            echo "No non-merge commits to check."
+            exit 0
+          fi
+          while IFS= read -r sha; do
+            [ -z "${sha}" ] && continue
+            subject="$(git log -1 --format='%h %s' "${sha}")"
+            if git log -1 --format='%B' "${sha}" | grep -Eq '^Signed-off-by: [^<]+ <[^>]+>$'; then
+              echo "ok ${subject}"
+            else
+              echo "::error title=Missing DCO sign-off::${subject} is missing a Signed-off-by trailer. Use git commit -s."
+              missing=1
+            fi
+          done <<< "${commits}"
+          exit "${missing}"

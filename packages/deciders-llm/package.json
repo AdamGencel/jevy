@@ -1,0 +1,41 @@
+{
+  "name": "@jevyjs/deciders-llm",
+  "version": "0.0.0",
+  "description": "Generic LLM-judge adapter for Jevy",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdamGencel/jevy.git",
+    "directory": "packages/deciders-llm"
+  },
+  "bugs": {
+    "url": "https://github.com/AdamGencel/jevy/issues"
+  },
+  "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/deciders-llm",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

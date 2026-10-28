@@ -1,0 +1,40 @@
+{
+  "name": "jevy",
+  "private": true,
+  "version": "0.0.0",
+  "description": "AI-assisted testing that produces plain Playwright code",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "packageManager": "pnpm@10.33.4",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "pnpm --filter \"./packages/*\" run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --filter \"./packages/*\" run typecheck",
+    "test": "vitest run",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "changeset": "changeset"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ],
+    "overrides": {
+      "vite": "6.4.5"
+    }
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.1",
+    "@eslint/js": "9.39.5",
+    "@types/node": "catalog:",
+    "eslint": "9.39.5",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.10",
+    "typescript": "catalog:",
+    "typescript-eslint": "8.72.1",
+    "vitest": "catalog:"
+  }
+}

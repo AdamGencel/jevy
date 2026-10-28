@@ -1,0 +1,41 @@
+{
+  "name": "@jevyjs/deciders-kev",
+  "version": "0.0.0",
+  "description": "Kev (local, open-weight) adapter for Jevy",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdamGencel/jevy.git",
+    "directory": "packages/deciders-kev"
+  },
+  "bugs": {
+    "url": "https://github.com/AdamGencel/jevy/issues"
+  },
+  "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/deciders-kev",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

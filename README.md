@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: design stage.** There is no code yet, and only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: M0 (repo foundation) is in the tree.** The pnpm workspace, TypeScript build, lint, Vitest, Changesets and CI are set up. The packages are stubs: there is no recorder, decider or Playwright plugin yet. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm. This repository contains only the Jevy product itself: the core library, the CLI, the Playwright plugin, the decider adapters and the Web3 wallet pack. You install it into your own project and configure it for your own app. No sample app ships with it. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
@@ -29,7 +29,7 @@ The design principles that follow from this:
 
 ## Quickstart: set Jevy up for your app (intended)
 
-Nothing is published yet. These steps show the planned setup.
+These steps show the planned setup. The packages in this repo are still stubs, and the only npm publish is the placeholder `@jevyjs/cli` 0.0.1.
 
 **1. Install** into a project that uses (or will use) Playwright:
 
@@ -155,7 +155,9 @@ This reports accuracy, true positive and true negative rates, calibration, laten
 
 The project will publish a public seed dataset of about 200 labelled cases, taken only from public apps (such as the Uniswap web app), so anyone can rerun the benchmark. It may live in a separate dataset repo, depending on the licensing of site snapshots (see OPEN-QUESTIONS). Run `eval` on your own labelled cases too before trusting a decider on your app.
 
-## Packages (planned)
+## Packages
+
+The workspace matches this layout. Each package builds, and none of them implement their milestone yet.
 
 | Package | Purpose |
 |---|---|
