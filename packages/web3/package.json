@@ -1,0 +1,42 @@
+{
+  "name": "@jevyjs/web3",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Wallet pack for Jevy: mock EIP-1193 provider, prompt classification, policy and viem helpers",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdamGencel/jevy.git",
+    "directory": "packages/web3"
+  },
+  "bugs": {
+    "url": "https://github.com/AdamGencel/jevy/issues"
+  },
+  "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/web3",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

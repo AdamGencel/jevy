@@ -1,0 +1,42 @@
+{
+  "name": "@jevyjs/deciders-jev",
+  "private": true,
+  "version": "0.0.0",
+  "description": "TypeSafe AI Jev adapter for Jevy",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdamGencel/jevy.git",
+    "directory": "packages/deciders-jev"
+  },
+  "bugs": {
+    "url": "https://github.com/AdamGencel/jevy/issues"
+  },
+  "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/deciders-jev",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

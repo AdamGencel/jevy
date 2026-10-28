@@ -39,7 +39,7 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
     - Link only to typesafe.ai and docs.typesafe.ai. Never link to look-alike domains such as jevtypesafeai.com, aijev.app, madewithjev.com or jevlaya.cc.
     - Every user brings their own `TYPESAFE_API_KEY`. Jevy never proxies or resells Jev access, because MCA §2.3(a) bans offering the Services "as a standalone service".
   - Optional: email TypeSafe (support@typesafe.ai) before the 0.1.0 launch to say the project exists. This isn't required.
-- **Repo home.** github.com/AdamGencel/jevy (not created yet).
+- **Repo home.** [github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy) (public, created 28 Oct 2026).
 - **Licence.** MIT, `Copyright (c) 2026 Adam Gencel` (see `LICENSE`).
 - **Jev access.** The maintainer has a direct TypeSafe Jev API key, read from the `TYPESAFE_API_KEY` environment variable. Keys are never committed.
 - **Data policy.** Jev (US-hosted) is acceptable for staging and public apps. Switching to local Kev is a one-line config change, settable per project and per test.

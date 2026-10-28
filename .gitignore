@@ -1,3 +1,12 @@
 .DS_Store
 node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+*.log
+pnpm-publish-summary.json
+
+# Secrets. Jev keys are read from TYPESAFE_API_KEY and must never be committed.
 .env
+.env.*
+!.env.example

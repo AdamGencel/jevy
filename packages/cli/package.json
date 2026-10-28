@@ -1,0 +1,47 @@
+{
+  "name": "@jevyjs/cli",
+  "private": true,
+  "version": "0.0.1",
+  "description": "CLI for Jevy. Installs the jevy command.",
+  "license": "MIT",
+  "author": "Adam Gencel",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "jevy": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AdamGencel/jevy.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/AdamGencel/jevy/issues"
+  },
+  "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/cli",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
