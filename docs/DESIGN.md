@@ -98,20 +98,20 @@ Echidna, Medusa and Halmos are AGPL-3.0, so they are invoked as external binarie
 
 ```
 packages/
-  core/            @jevy/core           Decider interface, cache, verdicts, snapshot pruning/hashing, config
-  playwright/      @jevy/playwright     test/expect wrappers, toSatisfy, locator repair, reporter
+  core/            @jevyjs/core           Decider interface, cache, verdicts, snapshot pruning/hashing, config
+  playwright/      @jevyjs/playwright     test/expect wrappers, toSatisfy, locator repair, reporter
   cli/             jevy (bin)           record, eval, cache, (v0.2) properties
-  deciders-jev/    @jevy/deciders-jev   TypeSafe AI adapter (wraps @typesafe-ai/sdk)
-  deciders-kev/    @jevy/deciders-kev   Kev adapter (same /v1/systemone wire shape, local URL)
-  deciders-llm/    @jevy/deciders-llm   generic LLM judge (structured output; provider-agnostic)
-  web3/            @jevy/web3           wallet prompt classes, policy, EIP-1193 mock, optional Anvil fork, viem helpers
+  deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI adapter (wraps @typesafe-ai/sdk)
+  deciders-kev/    @jevyjs/deciders-kev   Kev adapter (same /v1/systemone wire shape, local URL)
+  deciders-llm/    @jevyjs/deciders-llm   generic LLM judge (structured output; provider-agnostic)
+  web3/            @jevyjs/web3           wallet prompt classes, policy, EIP-1193 mock, optional Anvil fork, viem helpers
 docs/              design docs and user guides (setup for your own app, web3 config)
 ```
 
 - **Test fixtures** (minimal static pages, a tiny local dApp page for the wallet pack) live inside each package's test folder and are not published as examples.
-- **Eval.** The labelled-case schema ships with `@jevy/cli`. The public seed dataset may live in this repo or in a separate dataset repo, depending on snapshot licensing (OPEN-QUESTIONS).
+- **Eval.** The labelled-case schema ships with `jevy`. The public seed dataset may live in this repo or in a separate dataset repo, depending on snapshot licensing (OPEN-QUESTIONS).
 
-**Naming.** The CLI package publishes as `jevy` (bin `jevy`) and libraries as `@jevy/*`. Whether the CLI ships as the unscoped `jevy` or as `@jevy/cli` exposing a `jevy` bin depends on claiming the npm names; see OPEN-QUESTIONS. The source lives at github.com/AdamGencel/jevy (not created yet). Code is MIT.
+**Naming.** The CLI and main entry publish as the unscoped `jevy` package (bin `jevy`), and libraries publish under the `@jevyjs/*` scope (the `@jevy` scope belongs to an unrelated npm user; see OPEN-QUESTIONS). The source lives at github.com/AdamGencel/jevy (not created yet). Code is MIT.
 
 **Dependency rules.**
 - `core` has no model SDK dependencies.

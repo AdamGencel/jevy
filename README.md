@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: design stage.** There is no code yet, and the repository ([github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy)) and the npm packages are not created yet (the package scope is still being chosen, see open item 2; `@jevy/*` below is a placeholder). The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: design stage.** There is no code yet, and the repository ([github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy)) and the npm packages are not created yet (npm names are set: the CLI is `jevy` and libraries are `@jevyjs/*`). The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm. This repository contains only the Jevy product itself: the core library, the CLI, the Playwright plugin, the decider adapters and the Web3 wallet pack. You install it into your own project and configure it for your own app. No sample app ships with it. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
@@ -34,9 +34,9 @@ Nothing is published yet. These steps show the planned setup.
 **1. Install** into a project that uses (or will use) Playwright:
 
 ```bash
-pnpm add -D @playwright/test @jevy/playwright @jevy/cli
-pnpm add -D @jevy/deciders-jev      # and/or @jevy/deciders-kev, @jevy/deciders-llm
-pnpm add -D @jevy/web3 viem         # only if your app has wallet flows
+pnpm add -D @playwright/test @jevyjs/playwright jevy
+pnpm add -D @jevyjs/deciders-jev      # and/or @jevyjs/deciders-kev, @jevyjs/deciders-llm
+pnpm add -D @jevyjs/web3 viem         # only if your app has wallet flows
 ```
 
 **2. Choose a decider and supply its credentials** through environment variables. Never commit them.
@@ -51,7 +51,7 @@ TYPESAFE_API_KEY=...          # if you use Jev
 
 ```ts
 // jevy.config.ts (sketch; fields will change)
-import { defineConfig } from "@jevy/core";
+import { defineConfig } from "@jevyjs/core";
 
 export default defineConfig({
   baseURL: "http://localhost:3000",                  // your app
@@ -98,11 +98,11 @@ npx jevy record "Sign up with a new email and reach the dashboard" --url http://
 ### Level 2: existing Playwright tests → add semantic assertions and locator-repair suggestions (v0.1)
 
 ```bash
-pnpm add -D @jevy/playwright
+pnpm add -D @jevyjs/playwright
 ```
 
 ```ts
-import { test, expect } from "@jevy/playwright"; // wraps @playwright/test
+import { test, expect } from "@jevyjs/playwright"; // wraps @playwright/test
 
 test("order is confirmed", async ({ page }) => {
   await page.goto("/checkout");
@@ -126,7 +126,7 @@ The v0.2 pilots are public OSS projects, so results can be shared: viem (TypeScr
 
 ## Web3 wallet pack (v0.1)
 
-`@jevy/web3` is a generic feature for any dApp you test. It treats wallet pop-ups as test objects:
+`@jevyjs/web3` is a generic feature for any dApp you test. It treats wallet pop-ups as test objects:
 
 - The decider classifies each prompt (connect, sign message, sign typed data, send transaction, approve, switch network, unknown).
 - A policy written in TypeScript decides whether to approve, reject or stop.
@@ -159,13 +159,13 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 
 | Package | Purpose |
 |---|---|
-| `@jevy/core` | Decider interface, decision cache, verdicts, accessibility snapshot handling |
-| `@jevy/playwright` | Plugin: `toSatisfy`, locator repair suggestions, reporter |
-| `@jevy/cli` | `record`, `eval`, `cache`, later `properties` |
-| `@jevy/deciders-jev` | TypeSafe AI Jev adapter |
-| `@jevy/deciders-kev` | Kev (local, open-weight) adapter |
-| `@jevy/deciders-llm` | Generic LLM-judge adapter |
-| `@jevy/web3` | Wallet pack: mock EIP-1193 provider, prompt classification, policy, viem decoding, user-configured fork or testnet |
+| `@jevyjs/core` | Decider interface, decision cache, verdicts, accessibility snapshot handling |
+| `@jevyjs/playwright` | Plugin: `toSatisfy`, locator repair suggestions, reporter |
+| `jevy` (unscoped) | CLI: `record`, `eval`, `cache`, later `properties` |
+| `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter |
+| `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter |
+| `@jevyjs/deciders-llm` | Generic LLM-judge adapter |
+| `@jevyjs/web3` | Wallet pack: mock EIP-1193 provider, prompt classification, policy, viem decoding, user-configured fork or testnet |
 
 ## Privacy note
 

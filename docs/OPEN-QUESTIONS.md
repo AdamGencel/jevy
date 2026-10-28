@@ -4,13 +4,13 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
 
 ## Open
 
-2. **npm scope: `@jevy` is taken, pick a replacement.** (Checked 27 Oct 2026, partly resolved.)
+2. **npm scope: resolved. Libraries publish under `@jevyjs/*`, and the CLI and main entry publish as the unscoped `jevy`.** (`@jevy` was taken, checked 27 Oct 2026; Adam created the `@jevyjs` org on 28 Oct 2026.)
    - Free: the unscoped name `jevy` (`npm view jevy` returns 404). Use it for the main package and the CLI, so `npx jevy ...` and `npm i -D jevy` work.
    - Taken: the scope `@jevy`. An npm user account named `jevy` exists ([npmjs.com/~jevy](https://www.npmjs.com/~jevy): 0 packages, 0 orgs), and the registry reports the scope as existing (`registry.npmjs.org/-/org/jevy/package` returns `{}`; an unused scope returns "Scope not found"). User and org names share one namespace, so `npmjs.com/org/create` will refuse `jevy`. npm's [name policy](https://docs.npmjs.com/policies/disputes) says it is "extremely unlikely to transfer control of a username", even one with no packages, so don't plan on getting it back.
    - `@jevy/core`, `@jevy/cli`, `@jevy/web3` and `@jevy/playwright` all 404, but nobody except the `jevy` account can publish them.
    - Free alternatives, checked the same day: `@jevyjs`, `@jevyhq`, `@usejevy`, `@getjevy`, `@jevy-dev`; the unscoped `jevy-core`, `jevy-cli`, `jevy-web3`, `jevy-playwright` and `create-jevy` are also free.
-   - **Proposal:** CLI and main entry as unscoped `jevy`, sub-packages under `@jevyjs/*` (`@jevyjs/core`, `@jevyjs/playwright`, `@jevyjs/web3`, `@jevyjs/deciders-jev`, ...). The docs still say `@jevy/*` and get renamed once this is chosen.
-   - **Maintainer action (about 1 minute, needs your npm login):** create the free public org at <https://www.npmjs.com/org/create> with the name you choose (for example `jevyjs`). The unscoped `jevy` can't be reserved ahead of time. npm treats registering names "simply for the purposes of reserving it" as squatting, so publish the first real `jevy` release (M0/M1) soon after the repo goes public. Anyone can take the name until then.
+   - **Decision:** CLI and main entry as unscoped `jevy`, sub-packages under `@jevyjs/*` (`@jevyjs/core`, `@jevyjs/playwright`, `@jevyjs/web3`, `@jevyjs/deciders-jev`, ...). The docs use these names.
+   - **Remaining:** the unscoped `jevy` can't be reserved ahead of time, because npm treats registering names "simply for the purposes of reserving it" as squatting. Publish the first real `jevy` release (M0/M1) soon after the repo goes public, since anyone can take the name until then.
    - The GitHub user `jevy` (Jevin Maltais, account since 2009) is unrelated, so the repo stays at `AdamGencel/jevy`.
    - Similarly named Jev projects exist (`ZYRT3CH/jevyr`, an AI judge; `syumai/jevyoumean`; `markusbug/jevymarket`). `Ice-Hazymoon/jevwright` (npm `@hazymoon/jevwright`) overlaps with level 1.
    - *Blocks:* M0, M9.
@@ -25,7 +25,7 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
 ## Decided (27 Oct 2026)
 
 - **Product.** Open-source TypeScript framework distributed on npm as a pnpm monorepo. Three levels: record (no tests), Playwright plugin (existing tests), properties (v0.2). Decision cache with deterministic CI replay; numbers and chain state checked in code; swappable `Decider` (Jev pinned to `jev-1.14.0`, Kev, generic LLM judge); `eval` command; Web3 wallet pack as the standout generic feature. v0.1 = levels 1 and 2 plus the wallet pack. The repo contains only the product packages; users install and configure Jevy for their own app.
-- **Name.** Jevy: CLI and main npm package `jevy` (free as of 27 Oct 2026). The sub-package scope is pending open item 2, because `@jevy` is taken.
+- **Name.** Jevy: CLI and main npm package `jevy` (free as of 27 Oct 2026). Sub-packages publish under `@jevyjs/*` (org created 28 Oct 2026).
 - **TypeSafe AI brand check (open item 1, resolved 27 Oct 2026).** "Jevy" is reasonable to keep, with the precautions below. Low-to-moderate risk.
   - Findings:
     - TypeSafe AI, Inc. filed a US trademark application for the word mark **JEV** on 23 Sep 2026 (serial [50124229](https://trademarks.justia.com/501/24/jev-50124229.html)), classes 9 and 42 (AI decision software and SaaS). It is pending and not yet examined.
