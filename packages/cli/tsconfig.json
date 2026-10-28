@@ -2,8 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": "src",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@jevyjs/core": ["../core/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: M1 (core) is in the tree.** `@jevyjs/core` implements the Decider types, verdicts, snapshot hashing, redaction, and the `jevy.config.ts` loader (including `decider: "kev"`). There is still no decision cache, decider adapter, recorder, or Playwright plugin. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: M2 (decision cache) is in the tree.** `@jevyjs/core` implements the Decider types, verdicts, snapshot hashing, redaction, the `jevy.config.ts` loader (including `decider: "kev"`), and the decision cache. `jevy cache stats` and `jevy cache prune` work. There is still no decider adapter, recorder, or Playwright plugin. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The commands and APIs below show the *intended* usage and will change, except the cache section, which matches the code. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm. This repository contains only the Jevy product itself: the core library, the CLI, the Playwright plugin, the decider adapters and the Web3 wallet pack. You install it into your own project and configure it for your own app. No sample app ships with it. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
@@ -80,7 +80,7 @@ web3: {
 },
 ```
 
-**5. Record or extend tests** with levels 1 and 2 below, run them locally in `record` mode, and commit the specs plus `.jevy/decisions/`. CI replays them.
+**5. Record or extend tests** with levels 1 and 2 below, run them locally in `record` mode, and commit the specs plus `.jevy/decisions/`. CI replays them. Cache modes, commands, and what to gitignore are in [Decision cache](#decision-cache) below.
 
 ## Three levels — no existing tests needed
 
@@ -124,6 +124,41 @@ npx jevy properties propose --target packages/sdk/src   # intended, v0.2
 
 The v0.2 pilots are public OSS projects, so results can be shared: viem (TypeScript) and OpenZeppelin Contracts (Solidity).
 
+## Decision cache
+
+AI answers are written to `.jevy/decisions/` as JSON Lines, one sorted file per spec, and committed to git. Redaction runs before the cache key is built and before the line is written. A secret, a transaction hash (`0x` plus 64 hex characters), an email address, or a password-field value does not land in the file. The raw accessibility snapshot is not stored.
+
+`cache.mode` defaults to `record` outside CI and to `replay` when `CI` is set. `replay` only reads the cache: a hit replays the answer, a miss is `needs-review`, and the decider is not called. `replay-or-query` replays a hit and queries on a miss. `record` always queries and overwrites that cache key.
+
+```ts
+// jevy.config.ts
+cache: {
+  dir: ".jevy/decisions", // committed to git
+  // mode defaults to replay when CI is set, and record otherwise
+  // store: myStore, // optional DecisionStore; a directory belongs in dir
+},
+```
+
+A cosmetic page change (timestamp, UUID, long digit run) hits the cache. A renamed control or a checked-state change misses. The decider id and model pin are part of the key, so switching model does not reuse the old answer. A cached low-confidence yes or no still resolves to `needs-review`.
+
+```bash
+jevy cache stats [--dir .jevy/decisions]
+jevy cache prune --days 30 [--dir .jevy/decisions]
+jevy cache prune --not-referenced [--dir .jevy/decisions]
+```
+
+`stats` counts records, verdicts, and how many winning `needs-review` lines have `reviewedBy` set. `prune --days 30` drops superseded lines and any winner whose `lastUsedAt` is at least 30 days old. `lastUsedAt` moves on `record` and `replay-or-query`, not on CI `replay`, so a replay does not dirty the committed files. `prune --not-referenced` instead drops keys that the last `record` or `replay-or-query` run did not touch. Pass one of those flags, not both. Details are in [DESIGN.md §13](docs/DESIGN.md#13-decisions-made-in-m2).
+
+Commit the JSONL. Ignore the lock, the temp files, and the last-run bookkeeping:
+
+```gitignore
+.jevy/**/.locks/
+.jevy/**/.last-run.json
+.jevy/**/*.tmp
+```
+
+For a large suite, point `cache.dir` at another directory, or pass a `DecisionStore`. The built-in alternatives are the JSONL store and an in-memory store. There is no cloud backend.
+
 ## Web3 wallet pack (v0.1)
 
 `@jevyjs/web3` is a generic feature for any dApp you test. It treats wallet pop-ups as test objects:
@@ -157,7 +192,7 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 
 ## Packages
 
-The workspace matches this layout. Each package builds, and none of them implement their milestone yet.
+The workspace matches this layout. `@jevyjs/core` and the cache commands in `@jevyjs/cli` are implemented. The other packages are still stubs.
 
 | Package | Purpose |
 |---|---|

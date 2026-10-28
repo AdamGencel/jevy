@@ -1,4 +1,6 @@
 export {
+  CacheError,
+  CacheMissError,
   ConfigError,
   JevyError,
   QuestionError,
@@ -85,6 +87,49 @@ export type { PruneOptions, PrunedSnapshot } from "./prune.js";
 
 export { callDecider, prepareDecisionState } from "./prepare.js";
 export type { PreparedDecisionState } from "./prepare.js";
+
+export {
+  DECISION_RECORD_FIELDS,
+  DECISION_SCHEMA_VERSION,
+  assertSafeToStore,
+  compareRecords,
+  decisionKey,
+  decisionKeyMaterial,
+  parseDecisionRecord,
+  serialiseDecisionRecord,
+  winningRecord,
+} from "./decision-record.js";
+export type {
+  DecisionChoice,
+  DecisionKeyInput,
+  DecisionRecord,
+} from "./decision-record.js";
+
+export {
+  DECISION_STORE_METHODS,
+  JsonlDecisionStore,
+  MemoryDecisionStore,
+  specFile,
+} from "./decision-store.js";
+export type { DecisionStore } from "./decision-store.js";
+
+export {
+  cacheStats,
+  formatCacheStats,
+  formatPruneResult,
+  openDecisionStore,
+  pruneCache,
+  resolveDecision,
+  reviewDecision,
+} from "./cache.js";
+export type {
+  CacheAcceptance,
+  CacheStats,
+  PruneCacheOptions,
+  PruneResult,
+  ResolveDecisionInput,
+  ResolvedDecision,
+} from "./cache.js";
 
 export {
   CONFIG_FILENAMES,

@@ -1,6 +1,6 @@
 # Contributing to Jevy
 
-Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo. `@jevyjs/core` implements the M1 decision layer; the other packages are still stubs. The most useful contributions right now are still feedback on the design docs.
+Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo. `@jevyjs/core` implements the M1 decision layer and the M2 decision cache. `@jevyjs/cli` implements `jevy cache stats` and `jevy cache prune`. The other packages are still stubs. The most useful contributions right now are still feedback on the design docs.
 
 ## Right now
 

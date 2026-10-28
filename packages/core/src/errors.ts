@@ -23,3 +23,12 @@ export class SnapshotError extends JevyError {}
  * Callers must treat this as fatal: do not hash, store, or send the input.
  */
 export class RedactionError extends JevyError {}
+
+/** The decision cache could not be read, written, or replayed. */
+export class CacheError extends JevyError {}
+
+/**
+ * Replay mode had no record, and the caller asked for an error
+ * instead of `needs-review`. The decider is not called.
+ */
+export class CacheMissError extends CacheError {}

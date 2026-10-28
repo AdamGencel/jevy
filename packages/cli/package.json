@@ -2,7 +2,7 @@
   "name": "@jevyjs/cli",
   "private": true,
   "version": "0.0.1",
-  "description": "CLI for Jevy. Installs the jevy command.",
+  "description": "CLI for Jevy. Installs the jevy command, including cache stats and prune.",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",
@@ -35,6 +35,9 @@
     "url": "https://github.com/AdamGencel/jevy/issues"
   },
   "homepage": "https://github.com/AdamGencel/jevy/tree/main/packages/cli",
+  "dependencies": {
+    "@jevyjs/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"

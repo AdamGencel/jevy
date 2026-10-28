@@ -1,6 +1,6 @@
 # Jevy — Design
 
-Status: **M1 is implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, and config loader match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise. The decision cache (M2) and the Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
+Status: **M1 and M2 are implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, config loader, and decision cache match the sketches below except where [§12](#12-decisions-made-in-m1) and [§13](#13-decisions-made-in-m2) say otherwise. The Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 and §13 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 
@@ -221,9 +221,7 @@ Demos are recorded videos used in the README and for promotion. They are not par
 
 **Location.** By default `.jevy/decisions/`, committed to git. One JSON Lines file per spec keeps diffs reviewable.
 
-**Other storage.** For big suites, `cache.store` can point somewhere else:
-- an external directory, for example a separate repo or a CI cache volume;
-- a storage adapter (interface sketch: `get(key)`, `put(record)`, `list(spec)`).
+**Other storage.** For big suites, set `cache.dir` to another directory (a separate repo or a CI cache volume), or set `cache.store` to a `DecisionStore`. The store interface is `get`, `put`, `list`, `touch`, `replaceAll`, `noteReferenced`, and `referencedKeys`. `@jevyjs/core` ships `JsonlDecisionStore` (the default) and `MemoryDecisionStore`. There is no cloud backend. When `store` is set, it is used instead of `dir`. A string is not a store; a directory belongs in `dir`.
 
 The default stays in git.
 
@@ -236,32 +234,32 @@ The default stays in git.
 
 A redaction pass that fails blocks the write. The concrete patterns, and the rule that redaction runs before hashing as well as before a write, are in §12.
 
-**Key.** `sha256(kind, normalisedQuestion, optionIds, snapshotHash, deciderId, model)`.
-- `snapshotHash` covers only the *relevant* subtree: the step's target region, or the whole page for page-level checks.
-- Volatile attributes (timestamps, random IDs, counters) are normalised out by configurable rules, so cosmetic changes don't cause re-queries.
+**Key.** `sha256:` of canonical JSON `{ v, kind, prompt, criteria, goal, choices, snapshotHash, deciderId, model }`. `v` is the schema version. `prompt`, `criteria`, `goal`, and choice ids and labels are redacted and whitespace-collapsed before they are hashed. Absent criteria and goal hash as `""`. Choice order is the order in the question. `snapshotHash` is M1's `hashSnapshot` (`sha256:` of the redacted, normalised tree, or of one region). The decider id and model pin are part of the key, so a model change never reuses another model's answer. Spec path and step name are not part of the key: the same question on the same page can replay from another spec. The concrete field order is in §13.
 
-**Record (one line):**
+**Record (one line, keys in this order):**
 
 ```json
 {"v":1,"key":"sha256:…","spec":"tests/checkout.spec.ts","step":"toSatisfy#2",
- "kind":"yesno","question":"The page shows the order as confirmed","snapshotHash":"sha256:…",
- "decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"verdict":"pass",
- "thresholds":{"pass":0.8,"fail":0.5},"createdAt":"2026-10-27T22:00:00Z","reviewedBy":null}
+ "kind":"yesno","question":"The page shows the order as confirmed","criteria":null,"goal":null,"choices":[],
+ "snapshotHash":"sha256:…","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"verdict":"pass",
+ "thresholds":{"pass":0.8,"fail":0.5},"createdAt":"2026-10-27T22:00:00.000Z","lastUsedAt":"2026-10-27T22:00:00.000Z","reviewedBy":null}
 ```
 
 **Rules**
-- **Records are immutable.** A re-query appends a new record, and `jevy cache prune` removes superseded ones.
-- **Human review is recorded.** `reviewedBy` is set when a human accepts a `needs-review` verdict, and that becomes the replayed answer.
-- **Model changes invalidate.** Changing the decider or model pin changes the key, so old decisions are never silently reused for a new model.
-- **No secrets.** Records store hashes and questions, not raw snapshots. Snapshots can optionally go to a gitignored debug folder.
+- **Files are rewritten sorted**, by key, then `createdAt`, then spec, then step. One record per line. A directory lock and an atomic rename keep concurrent Playwright workers from tearing a line.
+- **`record` overwrites** every line with that key. **`replay-or-query` appends** on a miss. `jevy cache prune` drops superseded lines and unused winners.
+- **Human review is recorded.** `reviewDecision` appends a copy with `reviewedBy` set, and replay prefers a reviewed line. Review does not change confidence, so a low-confidence yes/no still replays as `needs-review`.
+- **Replay re-gates.** The stored `verdict` is what the gate said at write time. A later read runs `gateAnswer` again with the caller's thresholds. A cached low-confidence yes or no is `needs-review`.
+- **Model changes invalidate.** Changing the decider or model pin changes the key.
+- **No secrets.** Records store hashes, redacted questions, and answers, not raw snapshots. A line that still matches a secret pattern is refused. Snapshots can optionally go to a gitignored debug folder.
 
 ## 7. CI story
 
 | Mode | Behaviour on cache miss | Intended use |
 |---|---|---|
-| `replay` (CI default) | Step reports `needs-review`; no network calls | PR checks: fully deterministic, no API keys needed |
-| `replay-or-query` | Query the decider, record, continue | Nightly or main-branch runs that refresh the cache |
-| `record` | Always query, overwrite | Local authoring |
+| `replay` (CI default) | Step reports `needs-review` (or throws if the caller asked for an error); no network calls and no cache writes | PR checks: fully deterministic, no API keys needed |
+| `replay-or-query` | On a hit, replay and refresh `lastUsedAt`. On a miss, query the decider, record, continue | Nightly or main-branch runs that refresh the cache |
+| `record` | Always query, overwrite the key | Local authoring |
 
 - **`needs-review` policy.**
   - Default: **warn on pull requests, fail on the main branch.** Configurable per project, for example `ci: { needsReview: { pr: "warn", main: "fail" } }`.
@@ -351,7 +349,7 @@ export default defineConfig({
 });
 ```
 
-`loadConfig` in `@jevyjs/core` accepts this shape. Differences from the sketch, including the rejection of `cache.store` until M2, are in §12.
+`loadConfig` in `@jevyjs/core` accepts this shape. Differences from the sketch are in §12 and §13. `cache.store`, when set, is a `DecisionStore` object, not a path.
 
 ## 11. Known risks
 
@@ -364,7 +362,7 @@ export default defineConfig({
 
 ## 12. Decisions made in M1
 
-`@jevyjs/core` has no model SDK and makes no network calls. Tests use an in-memory decider. The published fake decider and the real adapters are M3. The decision-cache store and the cache key (`sha256` of kind, normalised question, option ids, snapshot hash, decider id, and model) are M2. `hashSnapshot` is the snapshot half of that key.
+`@jevyjs/core` has no model SDK and makes no network calls. Tests use an in-memory decider. The published fake decider and the real adapters are M3. The decision cache is §13. `hashSnapshot` is the snapshot half of the cache key.
 
 ### 12.1 Types
 
@@ -430,6 +428,69 @@ When Jev is selected and unconfigured, the pin is `jev-1.14.0`, the base URL is 
 
 `jev-latest` and `jev-preview`, including a `~typesafe/` or other author prefix, are rejected unless `deciders.jev.allowMovingAlias` is true. A Jev base URL must be https and one of `https://api.typesafe.ai`, `https://openrouter.ai/api`, or `https://ai-gateway.vercel.sh/typesafe`. Kev accepts any http(s) URL without credentials. The allow-list is also on the M3 adapter list; config rejects a look-alike host before an adapter exists.
 
-`cache.dir` defaults to `.jevy/decisions`. `cache.mode` is `replay` when `CI` is set and is not `""`, `"0"`, or `"false"`; otherwise `record`. `cache.store` throws until M2. `ci.needsReview` defaults to warn on pull requests and fail on `main`.
+`cache.dir` defaults to `.jevy/decisions`. `cache.mode` is `replay` when `CI` is set and is not `""`, `"0"`, or `"false"`; otherwise `record`. `cache.store` is optional. When it is set it must be a `DecisionStore`; a path or any other value throws, and the message points at `cache.dir`. `ci.needsReview` defaults to warn on pull requests and fail on `main`.
 
 `web3` is optional. When present, `driver` defaults to `"mock"` and `allowMainnetSigning` defaults to false. A known mainnet chain id adds a warning. The wallet pack does not exist yet; the warning records the intended refusal. `privateKeyEnv` and `rpcUrlEnv` must be variable names. A pasted key fails validation. `snapshotOptionsFromConfig` passes the loaded redact rules and normalisation into the hash.
+
+## 13. Decisions made in M2
+
+The decision cache lives in `@jevyjs/core`. `resolveDecision` is the supported way to replay or record one answer. `@jevyjs/cli` adds `jevy cache stats` and `jevy cache prune`. Nothing in this milestone calls a network API. The CI fixture stubs `globalThis.fetch` (Node's undici fetch) and `http`/`https` `request`, then asserts they were not called.
+
+### 13.1 Key
+
+`DECISION_SCHEMA_VERSION` is `1`. It is both the record's `v` and the `v` inside the hashed payload. The payload is JSON with this key order: `v`, `kind`, `prompt`, `criteria`, `goal`, `choices`, `snapshotHash`, `deciderId`, `model`. Choice entries are `{ id, label }` in question order. A yes/no question has no choices. A score's levels are stored as choices whose id and label are the level text.
+
+Strings are passed through M1 `redactText` before hashing, so the key is computed from redacted text and the unredacted text is not stored. Whitespace-only differences in the prompt hit. A different goal, criteria, choice label, snapshot hash, decider id, model, kind, or schema version misses.
+
+The snapshot half is `hashSnapshot`. Pruning still does not affect it. A region passed to `resolveDecision` is hashed the same way as in M1. Cosmetic changes that M1 already ignores (timestamps with a time, relative times, UUIDs, runs of 8 or more digits) hit the cache. A renamed control or a `checked` change misses, because those change the snapshot hash. A renamed choice label also misses, even when the snapshot is unchanged.
+
+Spec and step are stored on the record and are not part of the key.
+
+### 13.2 Files
+
+The default directory is `.jevy/decisions`. One JSONL file per spec, under the relative spec path with each segment URI-encoded, plus `.jsonl`. `tests/checkout.spec.ts` is `tests/checkout.spec.ts.jsonl`. Absolute paths and `..` segments throw. The snapshot is not in the file.
+
+Each line is `serialiseDecisionRecord`. Object keys are the field list in §6, not alphabetical. The file is sorted by key, then `createdAt`, then spec, then step, and ends with a newline. Blank lines are ignored on read. A malformed line or an unknown field throws `CacheError` and the line is not echoed, so a hand-edited secret does not land in the error text.
+
+Writes take an in-process queue per directory and a cross-process lock directory, `.jevy/decisions/.locks`, then write a temp file in the same directory and `rename` it over the target. That is the concurrency approach: one sorted file per spec, not a shard per Playwright worker. A crashed lock is stolen once its pid is gone, or after a second if it never wrote a pid. `.locks/`, `*.tmp`, and `.last-run.json` are gitignored. The JSONL is meant to be committed.
+
+### 13.3 Modes
+
+`cache.mode` defaults are unchanged from M1: `replay` when `CI` is set and is not `""`, `"0"`, or `"false"`, otherwise `record`.
+
+- **`replay`.** Read only. A hit re-gates the stored answer with the caller's thresholds (or the defaults). A miss returns `needs-review` and does not call the decider. `onMiss: "error"` throws `CacheMissError` instead, still with no decider call. Replay does not update `lastUsedAt` and does not write `.last-run.json`, so a CI run does not dirty git.
+- **`replay-or-query`.** A hit updates `lastUsedAt` on the winning line and notes the key. A miss calls the decider through `callDecider` (redacted and pruned) and appends a line.
+- **`record`.** Always calls the decider and replaces every stored line with that key.
+
+`openDecisionStore` returns `cache.store` when it is set, otherwise a `JsonlDecisionStore` for `cache.dir`.
+
+### 13.4 No-flip, review, prune, stats
+
+A cached yes/no is passed through `gateAnswer` on every read. Confidence below `pass` is `needs-review` for both `yes` and `no`. The stored `verdict` string is not trusted: a line that says `pass` with confidence `0.25` replays as `needs-review`. Caller thresholds win over the thresholds saved on the line, so raising `pass` can turn an old hit into `needs-review` without a new query.
+
+`reviewDecision(store, key, name)` appends a copy with `reviewedBy` set. Replay prefers a reviewed line over a newer unreviewed one. The copy keeps the original confidence, so review does not promote a weak answer to pass or fail. A reviewer value that redacts to `[REDACTED]` (an email address, for example) is rejected and not written.
+
+`jevy cache prune` keeps one winning line per key and always drops the others. It then drops that winner when asked:
+
+- **`--days <n>`.** `<n>` is an integer >= 0. The winner is unused when `lastUsedAt` is at or before `now` minus `<n>` times 24 hours. `lastUsedAt` is set when the line is written and when `replay-or-query` hits. Replay does not refresh it.
+- **`--not-referenced`.** The winner is unused when its key is absent from `.jevy/decisions/.last-run.json`. That file is updated only by `record` and `replay-or-query`. A CI replay does not change it. The file is gitignored.
+
+Passing both flags, or neither, is an error. There is no default age.
+
+`jevy cache stats` prints line counts, unique keys, specs, superseded lines, reviewed lines, stored verdicts, kinds, and deciders. Acceptance is `reviewed / total` among winning lines whose stored verdict is `needs-review`, overall and per `spec` + `step`. Zero such lines print `acceptance overall: n/a`. That ratio is the cache's view of the advisory-step acceptance bar in §8. It does not by itself switch a step off.
+
+### 13.5 Store interface
+
+```ts
+interface DecisionStore {
+  get(key: string): Promise<DecisionRecord | null>; // winning line
+  put(record: DecisionRecord, options?: { replace?: boolean }): Promise<void>;
+  list(spec?: string): Promise<readonly DecisionRecord[]>;
+  touch(key: string, lastUsedAt: string): Promise<void>;
+  replaceAll(records: readonly DecisionRecord[]): Promise<void>;
+  noteReferenced(key: string, at: string): Promise<void>;
+  referencedKeys(): Promise<ReadonlySet<string>>;
+}
+```
+
+`get` returns the newest reviewed line for the key, or the newest line if none is reviewed. `put` appends unless `replace` is set, in which case every line with that key is removed first. Both implementations refuse a record whose JSON still matches a redaction pattern, so a caller that skipped redaction cannot write the secret. `MemoryDecisionStore` keeps the same rules in memory. `JsonlDecisionStore` is the filesystem implementation. No cloud backend is included.
