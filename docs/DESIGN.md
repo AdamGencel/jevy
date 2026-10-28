@@ -168,7 +168,7 @@ interface Thresholds { pass: number; fail: number } // e.g. pass ≥ 0.8, fail <
 
 The defaults are placeholders. `eval` suggests project-specific values.
 
-M1 implements the gate as follows. Confidence on a yes/no answer is the probability that the returned value is correct, converted to P(the statement holds): `yes` keeps the confidence, `no` uses `1 - confidence`. P >= `pass` is `pass`, P < `fail` is `fail`, and the band between them is `needs-review`. `fail` must be strictly below `pass`. A low-confidence `no` can therefore pass. Score levels run from worst to best and are shrunk toward 0.5 as confidence drops. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details and the alternatives considered are in §12.
+M1 implements the gate as follows. A yes/no `yes` is `pass` only when its confidence is at least `pass`. A yes/no `no` is `fail` only when its confidence is at least `pass`. Any less sure yes or no is `needs-review`. The `fail` threshold does not apply to yes/no, and a weak answer is never taken as evidence for the opposite value. `fail` must still be strictly below `pass`, because a score uses both cuts: levels run from worst to best, shrink toward 0.5 as confidence drops, then `pass` at or above `pass`, `fail` below `fail`, and `needs-review` between them. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details are in §12.
 
 ### 5.3 Wallet pack
 
@@ -376,11 +376,17 @@ export default defineConfig({
 
 ### 12.2 Verdicts
 
-Yes/no confidence is P(the returned value is correct). It is converted to P(the statement holds), and both thresholds apply to that probability. A `no` at confidence 0.125 is P(yes) = 0.875 and passes the default gate. The conservative alternative, never treating a low-confidence answer as evidence for the opposite value, would make the `fail` threshold do nothing for yes/no. The inverting rule is what the `pass ≥ 0.8, fail < 0.5` note describes. It is the rule to confirm.
+Yes/no confidence is how sure the decider is of the value it returned. The gate does not convert that into P(the statement holds), and it does not flip a weak answer into the opposite verdict.
 
-Score levels are ordered from worst to best. The chosen level is a position from 0 to 1, then moved toward 0.5 by `(1 - confidence)`, then gated like yes/no.
+- A `yes` is `pass` only when confidence >= `pass`. With the defaults, `yes` at 0.8 or 0.93 passes. `yes` at 0.79 or 0.25 is `needs-review`.
+- A `no` is `fail` only when confidence >= `pass`. That is a confident no. With the defaults, `no` at 0.8 or 0.93 fails. `no` at 0.79 or 0.125 is `needs-review`.
+- Anything below `pass` is `needs-review`, whether the value is `yes` or `no`, and whether confidence sits between `fail` and `pass` or below `fail`.
 
-A choice must name one of the option ids. Confidence at or above `pass` accepts it (`pass`); anything lower is `needs-review`. A choice is never `fail`. More than 255 options, or a score outside 2 to 10 levels, throws. Core does not drop options to fit the cap.
+The `fail` threshold does not change a yes/no verdict. Using it as a cut on P(yes) was the rule that flipped a `no` at 0.125 into `pass` (because `1 - 0.125 = 0.875`) and that failed a weak `yes`. Both are rejected: uncertainty is `needs-review`, not evidence for the other answer, and not a product failure. Projects may still set `fail`. Two different `fail` values with the same `pass` produce the same yes/no verdict. `fail` must remain strictly below `pass` because score verdicts use the band between them.
+
+Score levels are ordered from worst to best. The chosen level is a position from 0 to 1, then moved toward 0.5 by `(1 - confidence)`. The adjusted position is `pass` when it is >= `pass`, `fail` when it is < `fail`, and `needs-review` in between. That is a point on an ordered scale. It is not the yes/no rule, and it does not invert a boolean answer.
+
+A choice must name one of the option ids. Confidence at or above `pass` accepts it (`pass`); anything lower is `needs-review`. A choice is never `fail`. The `fail` threshold does not apply. More than 255 options, or a score outside 2 to 10 levels, throws. Core does not drop options to fit the cap.
 
 ### 12.3 What the hash covers
 

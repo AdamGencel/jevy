@@ -24,27 +24,54 @@ const choice: Question = {
 };
 
 describe("verdict thresholds", () => {
-  it("gates yes/no on P(yes), using both thresholds", () => {
+  it("passes a confident yes and fails a confident no", () => {
     expect(gateAnswer(yesno, { value: "yes", confidence: 0.93 })).toBe("pass");
     expect(
       gateAnswer(yesno, { value: "yes", confidence: DEFAULT_THRESHOLDS.pass }),
     ).toBe("pass");
-    expect(gateAnswer(yesno, { value: "yes", confidence: 0.75 })).toBe(
+    expect(gateAnswer(yesno, { value: "no", confidence: 0.93 })).toBe("fail");
+    expect(
+      gateAnswer(yesno, { value: "no", confidence: DEFAULT_THRESHOLDS.pass }),
+    ).toBe("fail");
+  });
+
+  it("sends a weak yes and a weak no to needs-review", () => {
+    expect(gateAnswer(yesno, { value: "yes", confidence: 0.79 })).toBe(
       "needs-review",
     );
-    expect(gateAnswer(yesno, { value: "yes", confidence: 0.5 })).toBe(
+    expect(gateAnswer(yesno, { value: "yes", confidence: 0.25 })).toBe(
       "needs-review",
     );
-    expect(gateAnswer(yesno, { value: "yes", confidence: 0.25 })).toBe("fail");
-    expect(gateAnswer(yesno, { value: "no", confidence: 0.875 })).toBe("fail");
-    expect(gateAnswer(yesno, { value: "no", confidence: 0.5 })).toBe(
+    expect(gateAnswer(yesno, { value: "no", confidence: 0.79 })).toBe(
       "needs-review",
     );
-    // confidence is P(the returned value). A weakly held "no" is evidence for "yes".
-    expect(gateAnswer(yesno, { value: "no", confidence: 0.125 })).toBe("pass");
-    expect(probabilityOfYes(yesno, { value: "no", confidence: 0.125 })).toBe(
-      0.875,
+    expect(gateAnswer(yesno, { value: "no", confidence: 0.125 })).toBe(
+      "needs-review",
     );
+    expect(() =>
+      probabilityOfYes(yesno, { value: "no", confidence: 0.125 }),
+    ).toThrow(QuestionError);
+  });
+
+  it("does not apply the fail threshold to a yes/no answer", () => {
+    const thresholds = [
+      { pass: 0.8, fail: 0.1 },
+      { pass: 0.8, fail: 0.7 },
+    ] as const;
+    for (const gate of thresholds) {
+      expect(gateAnswer(yesno, { value: "yes", confidence: 0.3 }, gate)).toBe(
+        "needs-review",
+      );
+      expect(gateAnswer(yesno, { value: "no", confidence: 0.6 }, gate)).toBe(
+        "needs-review",
+      );
+      expect(gateAnswer(yesno, { value: "yes", confidence: 0.8 }, gate)).toBe(
+        "pass",
+      );
+      expect(gateAnswer(yesno, { value: "no", confidence: 0.8 }, gate)).toBe(
+        "fail",
+      );
+    }
   });
 
   it("shrinks a score toward needs-review as confidence drops", () => {

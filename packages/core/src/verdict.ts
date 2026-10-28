@@ -5,9 +5,10 @@ import { QuestionError } from "./errors.js";
 export type Verdict = "pass" | "fail" | "needs-review";
 
 /**
- * `pass` and `fail` are thresholds on P(the check holds), not on raw confidence.
  * Defaults are placeholders until `eval` calibrates a project.
- * `fail` must be strictly below `pass`, so a middle band can be `needs-review`.
+ * `pass` is the confidence bar for yes/no and choice, and the high cut for score.
+ * `fail` is the low cut for a score. It does not apply to yes/no or choice.
+ * `fail` must be strictly below `pass`, so a score can land on `needs-review`.
  */
 export interface Thresholds {
   readonly pass: number;
@@ -25,7 +26,7 @@ export function assertThresholds(thresholds: Thresholds): void {
   }
   if (fail >= pass) {
     throw new QuestionError(
-      "Thresholds require fail < pass so an answer can be needs-review",
+      "Thresholds require fail < pass so a score can be needs-review",
     );
   }
 }
@@ -33,13 +34,14 @@ export function assertThresholds(thresholds: Thresholds): void {
 /**
  * Map one answer onto a verdict.
  *
- * Yes/no: confidence is P(the returned value is correct). It is converted to
- * P(yes) = confidence for "yes", and 1 - confidence for "no". Then
- * P(yes) >= pass → pass, P(yes) < fail → fail, otherwise needs-review.
- * A low-confidence "no" can therefore pass. See DESIGN.md.
+ * Yes/no: confidence is how sure the decider is of the value it returned.
+ * `yes` passes only when confidence >= pass. `no` fails only when confidence
+ * >= pass. Anything below pass is `needs-review`. A weak answer is never
+ * treated as evidence for the opposite value, and `fail` is not consulted.
  *
  * Score: levels run from worst to best. The chosen level is a position in
- * [0, 1], then shrunk toward 0.5 by (1 - confidence), then gated like yes/no.
+ * [0, 1], then shrunk toward 0.5 by (1 - confidence). That position is `pass`
+ * at or above `pass`, `fail` below `fail`, and `needs-review` between them.
  *
  * Choice: confidence >= pass accepts the choice (`pass`). Anything lower is
  * `needs-review`. A choice is never `fail`; the fail threshold does not apply.
@@ -53,10 +55,10 @@ export function gateAnswer(
   validateAnswer(question, answer);
   switch (question.kind) {
     case "yesno":
-      return verdictFromProbability(
-        probabilityOfYes(question, answer),
-        thresholds,
-      );
+      if (answer.confidence >= thresholds.pass) {
+        return answer.value === "yes" ? "pass" : "fail";
+      }
+      return "needs-review";
     case "score":
       return verdictFromProbability(
         probabilityOfYes(question, answer),
@@ -70,8 +72,9 @@ export function gateAnswer(
 }
 
 /**
- * P(the yes/no statement holds), or the confidence-adjusted score position.
- * Throws for a choice question, which has no probability of "yes".
+ * Confidence-adjusted score position in [0, 1].
+ * Yes/no is not converted into P(the statement holds): that conversion flipped
+ * a weak answer. Choice has no probability of "yes" either. Use `gateAnswer`.
  */
 export function probabilityOfYes(
   question: Question,
@@ -80,7 +83,9 @@ export function probabilityOfYes(
   validateAnswer(question, answer);
   switch (question.kind) {
     case "yesno":
-      return answer.value === "yes" ? answer.confidence : 1 - answer.confidence;
+      throw new QuestionError(
+        "A yes/no answer is not converted to P(yes). Use gateAnswer.",
+      );
     case "score": {
       const index = question.levels.indexOf(answer.value);
       const span = question.levels.length - 1;
@@ -96,6 +101,10 @@ export function probabilityOfYes(
   }
 }
 
+/**
+ * Gate a score's adjusted position. `pass` at or above `pass`, `fail` below
+ * `fail`, otherwise `needs-review`. This is not the yes/no rule.
+ */
 export function verdictFromProbability(
   probability: number,
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
