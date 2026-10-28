@@ -1,6 +1,6 @@
 # Jevy — Design
 
-Status: **M0 scaffolding is in the repo; the behaviour below is not implemented yet.** This document describes intended behaviour. TypeScript snippets are signature sketches, not code to copy. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
+Status: **M1 is implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, and config loader match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise. The decision cache (M2) and the Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 
@@ -168,6 +168,8 @@ interface Thresholds { pass: number; fail: number } // e.g. pass ≥ 0.8, fail <
 
 The defaults are placeholders. `eval` suggests project-specific values.
 
+M1 implements the gate as follows. Confidence on a yes/no answer is the probability that the returned value is correct, converted to P(the statement holds): `yes` keeps the confidence, `no` uses `1 - confidence`. P >= `pass` is `pass`, P < `fail` is `fail`, and the band between them is `needs-review`. `fail` must be strictly below `pass`. A low-confidence `no` can therefore pass. Score levels run from worst to best and are shrunk toward 0.5 as confidence drops. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details and the alternatives considered are in §12.
+
 ### 5.3 Wallet pack
 
 ```ts
@@ -232,7 +234,7 @@ The default stays in git.
 - values of password and secret fields;
 - any patterns the user adds.
 
-A redaction pass that fails blocks the write.
+A redaction pass that fails blocks the write. The concrete patterns, and the rule that redaction runs before hashing as well as before a write, are in §12.
 
 **Key.** `sha256(kind, normalisedQuestion, optionIds, snapshotHash, deciderId, model)`.
 - `snapshotHash` covers only the *relevant* subtree: the step's target region, or the whole page for page-level checks.
@@ -349,7 +351,7 @@ export default defineConfig({
 });
 ```
 
-Config files only. Fields will change.
+`loadConfig` in `@jevyjs/core` accepts this shape. Differences from the sketch, including the rejection of `cache.store` until M2, are in §12.
 
 ## 11. Known risks
 
@@ -359,3 +361,69 @@ Config files only. Fields will change.
 - **Demos depend on live sites.** A site redesign or testnet outage can break a recording session. Demos are point-in-time and never gate CI.
 - **Wallet automation is brittle.** Synpress documents headless issues. Default to the mock provider and keep the real-extension driver for smoke tests.
 - **Level 3 evidence is mostly from Python** (Hypothesis). Whether it works as well with TypeScript and fast-check is unproven.
+
+## 12. Decisions made in M1
+
+`@jevyjs/core` has no model SDK and makes no network calls. Tests use an in-memory decider. The published fake decider and the real adapters are M3. The decision-cache store and the cache key (`sha256` of kind, normalised question, option ids, snapshot hash, decider id, and model) are M2. `hashSnapshot` is the snapshot half of that key.
+
+### 12.1 Types
+
+- The question kind is `yesno`, as in the §5.1 sketch. Jev's wire type `noul` is for the adapter to map.
+- `LlmAdapter` is declared here so config can hold one. `llmDecider()` is not implemented.
+- `DecisionState` is the accessibility snapshot plus optional `url`, `goal`, and `wallet` fields. There is no screenshot field. `prepareDecisionState` throws if a `screenshot` property is present.
+- The snapshot is a structured tree in the shape of Playwright's accessibility snapshot (`role`, `name`, `value`, states, `children`). YAML aria snapshots are not accepted. Core does not depend on Playwright.
+- `callDecider` redacts and prunes, then calls `Decider.decide`. That is the supported way to hand a page to a decider.
+
+### 12.2 Verdicts
+
+Yes/no confidence is P(the returned value is correct). It is converted to P(the statement holds), and both thresholds apply to that probability. A `no` at confidence 0.125 is P(yes) = 0.875 and passes the default gate. The conservative alternative, never treating a low-confidence answer as evidence for the opposite value, would make the `fail` threshold do nothing for yes/no. The inverting rule is what the `pass ≥ 0.8, fail < 0.5` note describes. It is the rule to confirm.
+
+Score levels are ordered from worst to best. The chosen level is a position from 0 to 1, then moved toward 0.5 by `(1 - confidence)`, then gated like yes/no.
+
+A choice must name one of the option ids. Confidence at or above `pass` accepts it (`pass`); anything lower is `needs-review`. A choice is never `fail`. More than 255 options, or a score outside 2 to 10 levels, throws. Core does not drop options to fit the cap.
+
+### 12.3 What the hash covers
+
+`hashSnapshot` returns `sha256:` and 64 hex characters. The payload is canonical JSON `{ v: 1, tree }` of the redacted, normalised tree, or of one region of it. Pruning does not affect the hash: a node removed only to fit a token budget still changes the hash when the page changes. The URL is not part of the snapshot hash. It is redacted before it would be sent.
+
+The same hash:
+
+- Key order, collapsed whitespace, and `children: []` versus no children.
+- `focused`, and fields outside the allow-list (`autocomplete`, `orientation`, `multiline`, `haspopup`, `keyshortcuts`, and the other presentational flags).
+- Inner `none` and `presentation` nodes, and unnamed `generic` nodes. Their children are promoted. The root node is kept.
+- Timestamps that include a time (`2026-10-28T01:02:03Z`), relative times (`3 seconds ago`), UUIDs, and runs of 8 or more digits.
+
+A new hash:
+
+- Accessible name, role, added or removed nodes.
+- `checked`, `pressed`, `expanded`, `selected`, `disabled`, `required`, `readonly`, `modal`, heading `level`, and a numeric `value`.
+- A bare calendar date (`Due 2026-10-28`). Dates without a time are treated as content.
+- A short number (`Order 42`). Long digit runs are the volatile ones.
+
+A region is `{ role, name? }`, matched on the normalised tree, first hit in tree order. The caller's name is normalised the same way. A miss throws, instead of hashing the whole page.
+
+`normalise.disable` can turn off `uuid`, `timestamp`, `relative-time`, or `long-digits`. Extra `replace` patterns and `dropRoles` are added. `none` and `presentation` always drop.
+
+The token estimate is `ceil(canonicalJson.length / 4)`. It is not a model tokenizer. Default prune limits are 400 nodes, depth 16, and 12,000 tokens. Kev uses 6,000 tokens so a question still fits in the 8,192-token window. Deepest leaves go first; ties go to the rightmost path. The root stays. If the root name alone exceeds the budget, it is shortened. `truncated` is reported and is not hashed.
+
+### 12.4 Redaction
+
+Redaction runs inside `hashSnapshot`, `prepareDecisionState`, and `callDecider`. Built-in rules always run. `redact` in config adds rules. If a second pass still matches a secret pattern, `RedactionError` is thrown and nothing is returned.
+
+Built-ins remove PEM private keys, AWS access keys, GitHub tokens, Slack tokens, Stripe-style keys, `sk-` keys, bearer tokens, `api_key=` / `password=` assignments, email addresses, and common phone numbers. Seed phrases are 12, 15, 18, 21, or 24 words from the BIP-39 English wordlist, which is vendored for that check only.
+
+`0x` followed by 64 hex characters is treated as an Ethereum private key and redacted. A 40-hex address is not: addresses are public and are often the thing under test. A transaction hash has the same shape as a private key, so it is redacted too. That is the tradeoff to confirm.
+
+A textbox or searchbox whose name or autocomplete says password, secret, API key, mnemonic, or private key has its value replaced. The accessible name stays, so the hash still shows that the control exists. The replacement token is `[REDACTED]`, so two secrets in the same place hash the same. Wallet field names matching key, secret, seed, mnemonic, password, or token are replaced entirely.
+
+### 12.5 Config
+
+`defineConfig` only types the object. `loadConfig` executes `jevy.config.ts`, then `.mts`, `.js`, or `.mjs`, using Node's type stripping, and `parseConfig` checks the result. Unknown keys throw. A missing file throws. There is no default decider: a hosted model is selected only by writing `decider: "jev"` or by passing an override. `decider: "kev"` is the one-line local switch. `selectDecider(config, "kev")` is the per-test override this package can apply. Playwright's `test.use` is M4 and will call the same function. An override does not reuse the project's model pin or fallback list. Fallback ids are checked and stored. Nothing calls them.
+
+When Jev is selected and unconfigured, the pin is `jev-1.14.0`, the base URL is `https://api.typesafe.ai`, and the key is read later from `TYPESAFE_API_KEY`. The loader stores that name and does not read the value. Kev defaults to `kev-4b@v1.0` at `http://127.0.0.1:8009`. An LLM decider requires `deciders.llm.adapter.complete` and an explicit `model`.
+
+`jev-latest` and `jev-preview`, including a `~typesafe/` or other author prefix, are rejected unless `deciders.jev.allowMovingAlias` is true. A Jev base URL must be https and one of `https://api.typesafe.ai`, `https://openrouter.ai/api`, or `https://ai-gateway.vercel.sh/typesafe`. Kev accepts any http(s) URL without credentials. The allow-list is also on the M3 adapter list; config rejects a look-alike host before an adapter exists.
+
+`cache.dir` defaults to `.jevy/decisions`. `cache.mode` is `replay` when `CI` is set and is not `""`, `"0"`, or `"false"`; otherwise `record`. `cache.store` throws until M2. `ci.needsReview` defaults to warn on pull requests and fail on `main`.
+
+`web3` is optional. When present, `driver` defaults to `"mock"` and `allowMainnetSigning` defaults to false. A known mainnet chain id adds a warning. The wallet pack does not exist yet; the warning records the intended refusal. `privateKeyEnv` and `rpcUrlEnv` must be variable names. A pasted key fails validation. `snapshotOptionsFromConfig` passes the loaded redact rules and normalisation into the hash.

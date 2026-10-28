@@ -2,7 +2,7 @@
   "name": "@jevyjs/core",
   "private": true,
   "version": "0.0.0",
-  "description": "Decider interface, decision cache, verdicts, and config for Jevy",
+  "description": "Decider interface, verdicts, snapshot hashing, redaction, and config for Jevy",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",
@@ -37,6 +37,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
