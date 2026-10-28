@@ -109,9 +109,9 @@ docs/              design docs and user guides (setup for your own app, web3 con
 ```
 
 - **Test fixtures** (minimal static pages, a tiny local dApp page for the wallet pack) live inside each package's test folder and are not published as examples.
-- **Eval.** The labelled-case schema ships with `jevy`. The public seed dataset may live in this repo or in a separate dataset repo, depending on snapshot licensing (OPEN-QUESTIONS).
+- **Eval.** The labelled-case schema ships with `@jevyjs/cli`. The public seed dataset may live in this repo or in a separate dataset repo, depending on snapshot licensing (OPEN-QUESTIONS).
 
-**Naming.** The CLI and main entry publish as the unscoped `jevy` package (bin `jevy`), and libraries publish under the `@jevyjs/*` scope (the `@jevy` scope belongs to an unrelated npm user; see OPEN-QUESTIONS). The source lives at github.com/AdamGencel/jevy (not created yet). Code is MIT.
+**Naming.** Every package publishes under the `@jevyjs/*` scope. The CLI is `@jevyjs/cli` and installs a `jevy` command. (`@jevy` belongs to an unrelated npm user, and npm blocks the unscoped `jevy` as too similar to `jest` and `levn`; see OPEN-QUESTIONS.) The source lives at github.com/AdamGencel/jevy. Code is MIT.
 
 **Dependency rules.**
 - `core` has no model SDK dependencies.

@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: design stage.** There is no code yet, and the repository ([github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy)) and the npm packages are not created yet (npm names are set: the CLI is `jevy` and libraries are `@jevyjs/*`). The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: design stage.** There is no code yet, and only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm. This repository contains only the Jevy product itself: the core library, the CLI, the Playwright plugin, the decider adapters and the Web3 wallet pack. You install it into your own project and configure it for your own app. No sample app ships with it. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
@@ -34,7 +34,7 @@ Nothing is published yet. These steps show the planned setup.
 **1. Install** into a project that uses (or will use) Playwright:
 
 ```bash
-pnpm add -D @playwright/test @jevyjs/playwright jevy
+pnpm add -D @playwright/test @jevyjs/playwright @jevyjs/cli
 pnpm add -D @jevyjs/deciders-jev      # and/or @jevyjs/deciders-kev, @jevyjs/deciders-llm
 pnpm add -D @jevyjs/web3 viem         # only if your app has wallet flows
 ```
@@ -161,7 +161,7 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 |---|---|
 | `@jevyjs/core` | Decider interface, decision cache, verdicts, accessibility snapshot handling |
 | `@jevyjs/playwright` | Plugin: `toSatisfy`, locator repair suggestions, reporter |
-| `jevy` (unscoped) | CLI: `record`, `eval`, `cache`, later `properties` |
+| `@jevyjs/cli` | CLI (bin `jevy`): `record`, `eval`, `cache`, later `properties` |
 | `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter |
 | `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter |
 | `@jevyjs/deciders-llm` | Generic LLM-judge adapter |
