@@ -183,7 +183,7 @@ API keys come from environment variables (for example `TYPESAFE_API_KEY`) and mu
 
 ## Contributing and licence
 
-MIT, see [LICENSE](LICENSE). Contributions are welcome under the Developer Certificate of Origin (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Maintainer: Adam Gencel (sole maintainer).
+MIT, see [LICENSE](LICENSE). Contributions are welcome under the Developer Certificate of Origin (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Development needs Node >= 22 (`.nvmrc` is 22; CI also runs Node 24). Maintainer: Adam Gencel (sole maintainer).
 
 ## Trademarks
 
