@@ -1,16 +1,16 @@
 # Jevy — Design
 
-Status: **M1 is implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, and config loader match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise. The decision cache (M2) and the Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
+Status: **M1 is implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, and config loader match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise. The decision cache (M2) and the Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026), except the comparison with e2e, Stagehand and Midscene, which follows their public docs and packages as reviewed in November 2026. Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 
-1. **Useful with zero existing tests.** Turn a plain-English goal into a normal, readable Playwright spec (level 1).
-2. **Improve existing Playwright suites.** Add semantic assertions with three verdicts and suggest locator repairs as reviewable diffs (level 2).
+1. **The AI layer for an existing Playwright suite.** Plug into `@playwright/test`. Do not ship a new runner or a new test file format. Add semantic assertions with three verdicts, and suggest locator repairs as reviewable diffs (level 2).
+2. **Useful when a flow has no spec yet.** Turn a plain-English goal into a normal, readable Playwright spec (level 1).
 3. **Generate properties and invariants** that survive a mechanical filter: they compile and kill a mutant or a seeded bug (level 3, v0.2).
-4. **Deterministic CI.** Every AI decision is recorded and replayed. Re-query only when the relevant part of the page changed.
-5. **Swappable models.** One `Decider` interface. Jev (hosted), Kev (local, open-weight) and generic LLM adapters ship from day one. Switching between Jev and Kev is a one-line config change, per project or per test.
-6. **Measured trust.** An `eval` command measures each decider on labelled cases (a published public set, plus the user's own) and recommends thresholds.
-7. **Web3 as the flagship feature.** Wallet pop-ups are first-class test objects in any dApp the user tests. The signing policy lives in code, and chain state is checked in code.
+4. **CI with no model calls.** Actions and assertion verdicts are cached in git, keyed on the decider and the model. Replay re-checks the confidence gates. A relevant state change misses. Replaying recorded actions is not, by itself, a Jevy-only idea; caching the verdict and re-gating it is the CI claim. See [§6](#6-decision-cache-format).
+5. **Swappable models.** One `Decider` interface. Jev (hosted), Kev (local, open-weight) and generic LLM adapters ship from day one. Switching between Jev and Kev is a one-line config change, per project or per test. The decider and model are part of the cache key.
+6. **Measured trust.** An `eval` command measures each decider on labelled cases (a published public set, plus the user's own) and recommends thresholds. Advisory steps stay on only at a 70% acceptance bar.
+7. **Web3 is first class.** Wallet pop-ups are test objects in any dApp the user tests. The signing policy lives in code, and chain state is checked in code.
 8. **Product only.** The repo ships the packages. Users install them and configure Jevy for their own app, wallet, RPC and network. Demos are recorded videos, not code in the repo (section 5.4).
 
 ## 2. Non-goals
@@ -49,7 +49,7 @@ flowchart TD
   Jev --> Gate{"Confidence gate"}
   Kev --> Gate
   LLM --> Gate
-  Gate --> Ledger["Write decision record"]
+  Gate --> Ledger["Re-gate on hit; write only after a later check confirms"]
   Ledger --> Out["pass / fail / needs-review<br/>repair diff · emitted spec"]
 
   Code["Code checks: numbers, balances,<br/>chain state (viem + Anvil)"] --> Out
@@ -57,9 +57,11 @@ flowchart TD
 ```
 
 **Principles**
-- Deterministic code always runs first.
+- Playwright code always runs first. Jevy does not replace `@playwright/test`.
 - The decider is consulted only at defined decision points: choose an action and element, judge a semantic check, classify a wallet prompt, and later rank properties.
-- Every decision is written to the cache before its result is used.
+- A cache hit is re-gated before it is used. `replay` does not call a model.
+- An entry is written only after a later check in the same test confirms the step (M2 follow-up). Until that check passes, the step is not available for replay.
+- `replay-or-query` and `record` refresh an entry with a new decider call. A Playwright retry reuses the cached verdict for that state and does not call the model again inside the same run.
 
 ### 3.1 Level 1: `record`
 
@@ -101,7 +103,7 @@ packages/
   core/            @jevyjs/core           Decider interface, cache, verdicts, snapshot pruning/hashing, config
   playwright/      @jevyjs/playwright     test/expect wrappers, toSatisfy, locator repair, reporter
   cli/             jevy (bin)           record, eval, cache, (v0.2) properties
-  deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI adapter (wraps @typesafe-ai/sdk)
+  deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI adapter (M3: Vercel AI SDK + @ai-sdk/typesafe-ai)
   deciders-kev/    @jevyjs/deciders-kev   Kev adapter (same /v1/systemone wire shape, local URL)
   deciders-llm/    @jevyjs/deciders-llm   generic LLM judge (structured output; provider-agnostic)
   web3/            @jevyjs/web3           wallet prompt classes, policy, EIP-1193 mock, optional Anvil fork, viem helpers
@@ -141,11 +143,13 @@ interface Decider {
 ```
 
 - **`DecisionState`** is the pruned accessibility snapshot plus small structured context: URL, step goal, wallet prompt fields. Screenshots are off by default, because Jev image input is preview-only.
-- **`confidence`** is the decider's probability, which for LLMs may be a self-reported or vote-based proxy. It is not trusted until `eval` has calibrated it.
+- **`confidence`** on the M1 `Answer` is the single number the gate reads today. It is not trusted until `eval` has calibrated it. From M3, probability and provider confidence are separate signals, as above. They are not collapsed into one number.
 - **Adapters:**
-  - **Jev:** maps to `POST /v1/systemone` and rejects the moving aliases (`jev-latest`, `jev-preview`) unless explicitly allowed.
+  - **Jev (M3):** built on the Vercel AI SDK's decision API (`experimental_decide`) and TypeSafe's AI SDK provider (`@ai-sdk/typesafe-ai`). The pin stays `jev-1.14.0`. Moving aliases (`jev-latest`, `jev-preview`) are rejected unless explicitly allowed. The base-URL allow-list stays: `https://api.typesafe.ai`, Vercel AI Gateway, and OpenRouter. The call goes from the user's machine or CI to that host. Jevy does not hold the key or stand between the user and TypeSafe.
   - **Jev keys** are read from `TYPESAFE_API_KEY`.
-  - **Kev:** the same wire shape against a local base URL. Kev is served by its own Python server (installed from source with `uv`; it is not on npm or PyPI), and the adapter only talks HTTP to it.
+  - **Probability and confidence are separate signals (M3).** Probability is the model's weight for the chosen value, when the provider returns a distribution. Confidence is the provider-reported confidence. A missing confidence is 0. A missing probability is not filled in with 1. The gate uses both. M1's `Answer` still has a single `confidence` number; splitting the two fields is part of the M3 adapter, not a change to the M1 type. See §12.2.
+  - **Every question has an explicit abstain option (M3).** A choice includes `none`. A yes/no or score question includes `inconclusive`. Selecting it maps to `needs-review`, including when probability and confidence are both high. Abstaining is an answer the model can give, not only a threshold the gate applies afterwards.
+  - **Kev:** HTTP to a local base URL the user sets. Kev is served by its own Python server (installed from source with `uv`; it is not on npm or PyPI), and the adapter only talks HTTP to that server. It is not sent through the Jev provider.
     - **Laptop default (estimate):** `jaredpalmer/kev-4b@v1.0`. Kev's README recommends starting there and lists it as running on a 32 GB Apple Silicon Mac via MLX.
     - **Smaller laptops (for example 16 GB):** the docs will point to `kev-0.8b@v1.0`, which runs on any Apple Silicon Mac but is clearly less accurate (0.648 vs 0.817 dev accuracy on new sources, per Kev's README).
     - **Context:** both have a validated context of 8,192 tokens, so snapshot pruning targets that budget when Kev is selected.
@@ -168,7 +172,9 @@ interface Thresholds { pass: number; fail: number } // e.g. pass ≥ 0.8, fail <
 
 The defaults are placeholders. `eval` suggests project-specific values.
 
-M1 implements the gate as follows. A yes/no `yes` is `pass` only when its confidence is at least `pass`. A yes/no `no` is `fail` only when its confidence is at least `pass`. Any less sure yes or no is `needs-review`. The `fail` threshold does not apply to yes/no, and a weak answer is never taken as evidence for the opposite value. `fail` must still be strictly below `pass`, because a score uses both cuts: levels run from worst to best, shrink toward 0.5 as confidence drops, then `pass` at or above `pass`, `fail` below `fail`, and `needs-review` between them. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details are in §12.
+The gates are on by default (`pass` 0.8, `fail` 0.5). A weak answer is `needs-review`. It is not a guessed pass or fail.
+
+M1 implements the gate as follows. A yes/no `yes` is `pass` only when its confidence is at least `pass`. A yes/no `no` is `fail` only when its confidence is at least `pass`. Any less sure yes or no is `needs-review`. The `fail` threshold does not apply to yes/no, and a weak answer is never taken as evidence for the opposite value. `fail` must still be strictly below `pass`, because a score uses both cuts: levels run from worst to best, shrink toward 0.5 as confidence drops, then `pass` at or above `pass`, `fail` below `fail`, and `needs-review` between them. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details are in §12. The M3 abstain option (`none` or `inconclusive`) is `needs-review` before those cuts are applied.
 
 ### 5.3 Wallet pack
 
@@ -227,7 +233,7 @@ Demos are recorded videos used in the README and for promotion. They are not par
 
 The default stays in git.
 
-**Redaction before write.** Records pass through the same redaction rules as decider calls before they are written. By default those rules remove:
+**Redaction before write.** Records pass through the same redaction rules as decider calls before they are written. The built-in rules are patterns. They catch keys, emails, seed phrases and transaction hashes without a registration list of secret values. By default those rules remove:
 - strings that look like API keys, bearer tokens or private keys;
 - seed phrases;
 - email addresses and phone numbers;
@@ -254,20 +260,34 @@ A redaction pass that fails blocks the write. The concrete patterns, and the rul
 - **Human review is recorded.** `reviewedBy` is set when a human accepts a `needs-review` verdict, and that becomes the replayed answer.
 - **Model changes invalidate.** Changing the decider or model pin changes the key, so old decisions are never silently reused for a new model.
 - **No secrets.** Records store hashes and questions, not raw snapshots. Snapshots can optionally go to a gitignored debug folder.
+- **Write after a later check confirms (M2 follow-up).** An entry is persisted for replay only after a later check in the same test confirms the step. A step that has not been confirmed is not a hit.
+- **Say why an entry was not used (M2 follow-up).** A miss or a rejected hit reports a reason. The set includes `model-changed`, `snapshot-changed`, `regated-below-threshold` and `redaction-changed`, plus a miss that had no entry.
+
+### Why a cached verdict is not the recording checking itself
+
+e2e caches verified action paths and runs assertions live. The objection to caching an assertion verdict is that replay would be "verifying the recording with the recording": the stored answer would pass the test because it is the stored answer. Midscene also leaves `aiAssert`, `aiQuery` and `aiBoolean` uncached. Jevy does cache verdicts. The rules below are what keep a replay from being the recording checking itself.
+
+- **Bound to a redacted state hash and to the decider and model.** The key is `sha256(kind, normalised question, option ids, snapshot hash, decider id, model)`. The snapshot hash is of the redacted, normalised tree (or one region of it), not of the verdict. The record does not store the raw page.
+- **Invalidated by a relevant state change.** A change to an accessible name, role, value or the nodes the hash covers is a different key. The old verdict is not a hit. Normalisation still drops cosmetic changes (timestamps, UUIDs, long digit runs) so those do not force a new call. See §12.3.
+- **Re-gated on replay.** A hit passes the stored answer through the confidence gate again, using the project's current thresholds. Replay can return `needs-review` when the recorded answer was `pass` or `fail`. From M3 the gate reads probability and provider confidence as separate signals, and an explicit `none` or `inconclusive` answer is `needs-review`.
+- **Refreshable.** `replay` never calls a model: a miss is `needs-review`. `replay-or-query` and `record` append a new record from a new decider call. A scheduled refresh is how a stale verdict gets a new answer. CI in `replay` mode does not call the model to bless the stored one.
+
+A Playwright retry reuses that cached verdict for the same state. It does not call the model again inside the run, so a retry cannot draw a new answer until the state, the decider or the model actually changes.
 
 ## 7. CI story
 
 | Mode | Behaviour on cache miss | Intended use |
 |---|---|---|
-| `replay` (CI default) | Step reports `needs-review`; no network calls | PR checks: fully deterministic, no API keys needed |
+| `replay` (CI default) | Step reports `needs-review`; no network calls. A hit is re-gated. | PR checks: no model calls and no API keys |
 | `replay-or-query` | Query the decider, record, continue | Nightly or main-branch runs that refresh the cache |
 | `record` | Always query, overwrite | Local authoring |
 
 - **`needs-review` policy.**
   - Default: **warn on pull requests, fail on the main branch.** Configurable per project, for example `ci: { needsReview: { pr: "warn", main: "fail" } }`.
   - Branch detection uses standard CI environment variables, and the main branch name is configurable.
-- PR runs are deterministic and need no model keys or network in `replay` mode.
-- A changed page shows up as a cache miss, which is a reviewable signal rather than a silent AI call.
+- PR runs in `replay` mode make no model calls and need no model keys.
+- `--strict` (M2 follow-up) fails a stale entry as a different outcome from a missing entry, and still makes no model call. `jevy cache ls` lists entries.
+- A changed page shows up as a cache miss, which is a reviewable signal rather than a silent model call. The miss names its reason (M2 follow-up).
 - A scheduled job in `replay-or-query` mode refreshes decisions and opens a PR with the updated cache and any repair diffs. Opening the PR is a user-configured CI step, not built in.
 - Nondeterministic steps (LLM planning, exploratory runs) never sit in the blocking path.
 - **Cost.** At Jev's published $0.042 per million input tokens (output free), a refresh run is likely cheap. Planning with a frontier LLM costs more, but only at authoring time. *(estimate; depends on page size and run count)*
@@ -310,7 +330,7 @@ A redaction pass that fails blocks the write. The concrete patterns, and the rul
   - Hosted deciders must be enabled explicitly per project.
 - **Look-alike Jev domains.** Third-party sites such as jevtypesafeai.com, aijev.app, madewithjev.com and jevlaya.cc proxy the API or sell "instant hosted keys". The Jev adapter will:
   - Default to `https://api.typesafe.ai`.
-  - Accept only an allow-list of base URLs: the official API, Vercel AI Gateway, OpenRouter, or a user-declared Kev URL.
+  - Accept only an allow-list of base URLs: the official API, Vercel AI Gateway, and OpenRouter. Kev uses its own local base URL and is not sent to the Jev provider.
   - Warn loudly on anything else.
   - Docs will link only typesafe.ai and docs.typesafe.ai.
 - **Prompt injection.** Page content is untrusted input to the decider; Jev's docs note it can be swayed by adversarial state. Mitigations:
@@ -356,11 +376,21 @@ export default defineConfig({
 ## 11. Known risks
 
 - **Jev maturity and access.** It launched 15 Sep 2026 and is in early access; the HN thread reported that signups were closed. The maintainer has a direct API key, but many users and contributors won't. Kev and the LLM adapters are the exit, and the project and its public benchmark must work without Jev.
-- **Calibration** is disputed for Jev and unknown for LLM proxies. Use `eval` and three verdicts.
-- **Competition.** Playwright's agents or vendors such as Momentic may add similar features. The differentiators are calibration, deterministic replay, the Web3 pack and plain code output.
+- **Calibration** is disputed for Jev and unknown for LLM proxies. Use `eval`, three verdicts, and gates that default to on.
+- **What is actually different.** Action replay with a read-only CI cache already exists elsewhere, and so does a TypeSafe Jev decision executor. See [How Jevy compares](#how-jevy-compares). Jevy's own claims are: it plugs into an existing `@playwright/test` suite, gates default to on, weak answers are `needs-review` (warn on pull requests, fail on `main`), verdicts and actions are cached in git and keyed on decider and model and re-gated on replay, redaction is pattern-based, there is a public eval with a labelled dataset and a 70% precision bar, and Web3 is first class.
 - **Demos depend on live sites.** A site redesign or testnet outage can break a recording session. Demos are point-in-time and never gate CI.
 - **Wallet automation is brittle.** Synpress documents headless issues. Default to the mock provider and keep the real-extension driver for smoke tests.
 - **Level 3 evidence is mostly from Python** (Hypothesis). Whether it works as well with TypeScript and fast-check is unproven.
+
+### How Jevy compares
+
+Notes from public docs and packages as reviewed in November 2026. Each note is limited to what that project publishes.
+
+- **[e2e](https://github.com/tester-army/e2e)** (TesterArmy, Apache-2.0) is its own runner. Tests are `*.e2e.ts` and import `test` and `expect` from `e2e`, not from `@playwright/test`. A test can mix Playwright-style locators with `agent.act`, `agent.assert`, `agent.waitFor` and `agent.extract`. It ships a TypeSafe Jev decision executor, [`@e2e-dev/decision`](https://www.npmjs.com/package/@e2e-dev/decision), and it replays verified action paths from a cache that is read-only in CI. The model is not part of that cache key. Assertions, waits and extracts run live; assertion verdicts are not cached. The objection to caching them is answered in [§6](#why-a-cached-verdict-is-not-the-recording-checking-itself). Docs: [e2e.tester.army](https://e2e.tester.army/).
+- **[Stagehand](https://github.com/browserbase/stagehand)** (Browserbase, MIT) is a browser-agent SDK rather than a test framework. It offers act, observe and extract. Its server-side cache is keyed by the instruction, the page content and the options, and the model is not part of that key. Docs: [docs.stagehand.dev](https://docs.stagehand.dev/).
+- **[Midscene.js](https://midscenejs.com/)** (ByteDance web-infra) caches action planning and XPath locating. `aiAssert`, `aiQuery` and `aiBoolean` are not cached. Modes include read-only and write-only. See [midscenejs.com/caching](https://midscenejs.com/caching).
+
+e2e is the tool that drives an app at runtime, including on mobile. Jevy is the layer for a suite that stays on `@playwright/test`.
 
 ## 12. Decisions made in M1
 
@@ -375,6 +405,8 @@ export default defineConfig({
 - `callDecider` redacts and prunes, then calls `Decider.decide`. That is the supported way to hand a page to a decider.
 
 ### 12.2 Verdicts
+
+M1 stores one number, `confidence`. Probability and provider confidence become separate fields in the M3 Jev adapter (§5.1). Until that lands, the gate below reads `confidence` only.
 
 Yes/no confidence is how sure the decider is of the value it returned. The gate does not convert that into P(the statement holds), and it does not flip a weak answer into the opposite verdict.
 
