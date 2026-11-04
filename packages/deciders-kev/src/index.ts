@@ -1,2 +1,6 @@
-// Stub. The Kev adapter lands in a later milestone.
-export {};
+export {
+  KEV_REQUEST_MODEL,
+  kevDecider,
+  kevDeciderFromSelection,
+} from "./kev.js";
+export type { KevDeciderOptions } from "./kev.js";

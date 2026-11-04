@@ -2,6 +2,7 @@ export {
   CacheError,
   CacheMissError,
   ConfigError,
+  DeciderTransportError,
   JevyError,
   QuestionError,
   RedactionError,
@@ -9,6 +10,7 @@ export {
 } from "./errors.js";
 
 export {
+  ABSTAIN_ID,
   MAX_CHOICE_OPTIONS,
   MAX_SCORE_LEVELS,
   MIN_SCORE_LEVELS,
@@ -130,6 +132,34 @@ export type {
   ResolveDecisionInput,
   ResolvedDecision,
 } from "./cache.js";
+
+export { fakeDecider } from "./fake-decider.js";
+export type { FakeDeciderOptions } from "./fake-decider.js";
+
+export { openDecider } from "./open-decider.js";
+export type { DeciderFactories, OpenDeciderOptions } from "./open-decider.js";
+
+export { DECIDER_CONTRACT_CASES } from "./contract-cases.js";
+export type { DeciderContractCase } from "./contract-cases.js";
+
+export {
+  errorText,
+  isHostUnreachable,
+  redactSecrets,
+  retryWithBackoff,
+  retryableStatus,
+  statusCode,
+} from "./transport.js";
+export type { RetryOptions } from "./transport.js";
+
+export {
+  answerFromSignals,
+  decisionStatePayload,
+  prepareWireQuestion,
+  prepareWireQuestions,
+  systemOneQuestions,
+} from "./wire-question.js";
+export type { PreparedWireQuestion, WireOption } from "./wire-question.js";
 
 export {
   CONFIG_FILENAMES,

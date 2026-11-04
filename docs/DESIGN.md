@@ -1,6 +1,6 @@
 # Jevy — Design
 
-Status: **M1 and M2 are implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, config loader, and decision cache match the sketches below except where [§12](#12-decisions-made-in-m1) and [§13](#13-decisions-made-in-m2) say otherwise. The Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 and §13 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026). Anything marked *(estimate)* is a guess.
+Status: **M1, M2, and M3 are implemented.** `@jevyjs/core` has the Decider types, verdict gate, snapshot hash, redaction, config loader, and decision cache. `@jevyjs/deciders-jev`, `@jevyjs/deciders-kev`, and `@jevyjs/deciders-llm` implement the three adapters. Those match the sketches below except where [§12](#12-decisions-made-in-m1), [§13](#13-decisions-made-in-m2), and [§14](#14-decisions-made-in-m3) say otherwise. The recorder, Playwright plugin, and wallet pack are not implemented. TypeScript snippets outside §12–§14 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026) and from the provider packages pinned in §14. Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 
@@ -101,7 +101,7 @@ packages/
   core/            @jevyjs/core           Decider interface, cache, verdicts, snapshot pruning/hashing, config
   playwright/      @jevyjs/playwright     test/expect wrappers, toSatisfy, locator repair, reporter
   cli/             jevy (bin)           record, eval, cache, (v0.2) properties
-  deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI adapter (wraps @typesafe-ai/sdk)
+  deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI adapter (Vercel AI SDK + @ai-sdk/typesafe-ai)
   deciders-kev/    @jevyjs/deciders-kev   Kev adapter (same /v1/systemone wire shape, local URL)
   deciders-llm/    @jevyjs/deciders-llm   generic LLM judge (structured output; provider-agnostic)
   web3/            @jevyjs/web3           wallet prompt classes, policy, EIP-1193 mock, optional Anvil fork, viem helpers
@@ -114,8 +114,8 @@ docs/              design docs and user guides (setup for your own app, web3 con
 **Naming.** Every package publishes under the `@jevyjs/*` scope. The CLI is `@jevyjs/cli` and installs a `jevy` command. (`@jevy` belongs to an unrelated npm user, and npm blocks the unscoped `jevy` as too similar to `jest` and `levn`; see OPEN-QUESTIONS.) The source lives at github.com/AdamGencel/jevy. Code is MIT.
 
 **Dependency rules.**
-- `core` has no model SDK dependencies.
-- No hard dependency on any LLM provider. `deciders-llm` and the `record` planner take a user-supplied model adapter.
+- `core` has no model SDK dependencies. It does not import the decider packages.
+- No hard dependency on a particular LLM vendor. `deciders-llm` takes either a user-supplied `LlmAdapter` or any Vercel AI SDK `LanguageModel`. `deciders-jev` is the only package that depends on TypeSafe's provider, and it is opt-in.
 - Each decider is a separate package, so users install only what they use.
 - `playwright` and `web3` depend on `core`, and on Playwright and viem as peer dependencies.
 
@@ -131,7 +131,7 @@ type Question =
   | { kind: "yesno"; prompt: string; criteria?: string }                          // Jev `noul`
   | { kind: "score"; prompt: string; levels: string[] };                          // 2–10 levels
 
-interface Answer { value: string; confidence: number; raw?: unknown }
+interface Answer { value: string; confidence: number; probability?: number; raw?: unknown }
 
 interface Decider {
   readonly id: string;     // e.g. "jev", "kev", "llm:<provider>/<model>"
@@ -141,23 +141,18 @@ interface Decider {
 ```
 
 - **`DecisionState`** is the pruned accessibility snapshot plus small structured context: URL, step goal, wallet prompt fields. Screenshots are off by default, because Jev image input is preview-only.
-- **`confidence`** is the decider's probability, which for LLMs may be a self-reported or vote-based proxy. It is not trusted until `eval` has calibrated it.
-- **Adapters:**
-  - **Jev:** maps to `POST /v1/systemone` and rejects the moving aliases (`jev-latest`, `jev-preview`) unless explicitly allowed.
-  - **Jev keys** are read from `TYPESAFE_API_KEY`.
-  - **Kev:** the same wire shape against a local base URL. Kev is served by its own Python server (installed from source with `uv`; it is not on npm or PyPI), and the adapter only talks HTTP to it.
-    - **Laptop default (estimate):** `jaredpalmer/kev-4b@v1.0`. Kev's README recommends starting there and lists it as running on a 32 GB Apple Silicon Mac via MLX.
-    - **Smaller laptops (for example 16 GB):** the docs will point to `kev-0.8b@v1.0`, which runs on any Apple Silicon Mac but is clearly less accurate (0.648 vs 0.817 dev accuracy on new sources, per Kev's README).
-    - **Context:** both have a validated context of 8,192 tokens, so snapshot pruning targets that budget when Kev is selected.
-    - These sizes are estimates until our own `eval` confirms them on laptop hardware.
-  - **LLM:** provider-agnostic. The user plugs in any model through a small adapter (sketch below). It prompts for structured output and validates it with zod. There is no built-in provider and no hard dependency.
+- **`confidence`** is how peaked the decider's belief is. It is not the probability of the chosen value. The gate reads confidence only. It is not trusted until `eval` has calibrated it.
+- **`probability`** is the probability of the chosen value. It is stored on the answer and on the decision record, and it does not change the verdict.
+- **Adapters** are implemented as described in §14. The sketch below is the call shape, not the wire format.
+  - **Jev:** hosted, opt-in, pin `jev-1.14.0`, key from `TYPESAFE_API_KEY` at call time.
+  - **Kev:** local System One server. Laptop default `kev-4b@v1.0`.
+  - **LLM:** any AI SDK `LanguageModel`, or the config `LlmAdapter`. Structured output bounds each answer to the allowed values.
 
 ```ts
 interface LlmAdapter { complete(prompt: string, jsonSchema: object): Promise<unknown> } // user-supplied
-declare function llmDecider(opts: { adapter: LlmAdapter; id: string }): Decider;
 ```
 
-**Choosing a decider.** It is set once per project in config and can be overridden per test file (`test.use({ decider: "kev" })`) or per assertion (`toSatisfy(statement, { decider: "kev" })`). The decider ID is part of the cache key, so switching never reuses another model's decisions.
+**Choosing a decider.** `selectDecider(config, override?)` resolves the id, model pin, base URL, key env name, and LLM adapter from config. It does not construct a client. `openDecider(config, { factories, mode })` turns that selection into a `Decider` by calling the factory for the selected id (`jevDeciderFromSelection`, `kevDeciderFromSelection`, or `llmDeciderFromSelection`). There is no default decider. Jev is used only when config or the override says `"jev"`. `test.use({ decider: "kev" })` is the Playwright form of the same override and lands in M4. The decider id and model pin are part of the cache key, so switching never reuses another model's decisions. In `replay` mode, `openDecider` does not call a factory.
 
 ### 5.2 Verdicts and the confidence gate
 
@@ -168,7 +163,7 @@ interface Thresholds { pass: number; fail: number } // e.g. pass ≥ 0.8, fail <
 
 The defaults are placeholders. `eval` suggests project-specific values.
 
-M1 implements the gate as follows. A yes/no `yes` is `pass` only when its confidence is at least `pass`. A yes/no `no` is `fail` only when its confidence is at least `pass`. Any less sure yes or no is `needs-review`. The `fail` threshold does not apply to yes/no, and a weak answer is never taken as evidence for the opposite value. `fail` must still be strictly below `pass`, because a score uses both cuts: levels run from worst to best, shrink toward 0.5 as confidence drops, then `pass` at or above `pass`, `fail` below `fail`, and `needs-review` between them. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Details are in §12.
+M1 implements the gate as follows. A yes/no `yes` is `pass` only when its confidence is at least `pass`. A yes/no `no` is `fail` only when its confidence is at least `pass`. Any less sure yes or no is `needs-review`. The `fail` threshold does not apply to yes/no, and a weak answer is never taken as evidence for the opposite value. `fail` must still be strictly below `pass`, because a score uses both cuts: levels run from worst to best, shrink toward 0.5 as confidence drops, then `pass` at or above `pass`, `fail` below `fail`, and `needs-review` between them. A choice is `pass` only when confidence is at least `pass`, and is never `fail`. Choosing the inconclusive option (`__jevy_abstain`) is `needs-review` for every kind, whatever the confidence. Details are in §12 and §14.
 
 ### 5.3 Wallet pack
 
@@ -241,7 +236,7 @@ A redaction pass that fails blocks the write. The concrete patterns, and the rul
 ```json
 {"v":1,"key":"sha256:…","spec":"tests/checkout.spec.ts","step":"toSatisfy#2",
  "kind":"yesno","question":"The page shows the order as confirmed","criteria":null,"goal":null,"choices":[],
- "snapshotHash":"sha256:…","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"verdict":"pass",
+ "snapshotHash":"sha256:…","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"probability":0.8,"verdict":"pass",
  "thresholds":{"pass":0.8,"fail":0.5},"createdAt":"2026-10-27T22:00:00.000Z","lastUsedAt":"2026-10-27T22:00:00.000Z","reviewedBy":null}
 ```
 
@@ -362,7 +357,7 @@ export default defineConfig({
 
 ## 12. Decisions made in M1
 
-`@jevyjs/core` has no model SDK and makes no network calls. Tests use an in-memory decider. The published fake decider and the real adapters are M3. The decision cache is §13. `hashSnapshot` is the snapshot half of the cache key.
+`@jevyjs/core` has no model SDK and makes no network calls. `fakeDecider` answers without a network. The real adapters are §14. The decision cache is §13. `hashSnapshot` is the snapshot half of the cache key.
 
 ### 12.1 Types
 
@@ -494,3 +489,72 @@ interface DecisionStore {
 ```
 
 `get` returns the newest reviewed line for the key, or the newest line if none is reviewed. `put` appends unless `replace` is set, in which case every line with that key is removed first. Both implementations refuse a record whose JSON still matches a redaction pattern, so a caller that skipped redaction cannot write the secret. `MemoryDecisionStore` keeps the same rules in memory. `JsonlDecisionStore` is the filesystem implementation. No cloud backend is included.
+
+## 14. Decisions made in M3
+
+The three adapters live in their own packages. `@jevyjs/core` still has no model SDK. `selectDecider` returns the selection (id, model pin, base URL or adapter). `openDecider` calls the factory the application passed in for that id. A missing factory throws `ConfigError` and names `@jevyjs/deciders-<id>`. There is no default decider.
+
+### 14.1 Inconclusive option, probability, and confidence
+
+Every question sent to a model includes an explicit inconclusive option, id `__jevy_abstain`. A caller cannot use that id as a choice id or a score level. A choice may have at most 254 caller options, because the 255th slot is abstain. Picking abstain returns `value: "__jevy_abstain"`, and `gateAnswer` returns `needs-review` before the kind-specific rules. The no-flip rule is unchanged: pass only on a confident yes, fail only on a confident no, and a weak answer is `needs-review`.
+
+Yes/no and score are sent as a System One `choice` whose options are the levels (or yes and no) plus abstain. Native `noul` returns only the probability of true and has no confidence field, so using it would force confidence to 0 and never pass. Native `score` has confidence but no abstain slot. Fractional scores are not returned; the answer value is one of the level strings, which is what M1 already required.
+
+`probability` is the probability of the picked option, or 0 when that number is missing or outside 0–1. `confidence` is the separate peakedness score, or 0 when it is missing, null, or outside 0–1. The gate still reads confidence only. A high probability with no confidence is `needs-review`. Both numbers are stored on the decision record. The cache key payload is unchanged, so `DECISION_SCHEMA_VERSION` stays `1`. The line field order gained `probability` immediately after `confidence`. M2 has not been released; a JSONL file written by the M2 code will fail to parse. When an in-memory answer omits `probability`, `resolveDecision` stores `answer.confidence` in that field.
+
+How each decider fills the two numbers:
+
+- **Jev.** `experimental_decide` returns a choice distribution. `probability` is `answers[name].probabilities[picked]`. `confidence` is `providerMetadata.typesafe.confidence[name]`. TypeSafe describes confidence as peakedness: a flat distribution is low, a single peak is high, and it can be lower than the probability of the chosen option.
+- **Kev.** The local server is asked the same choice shape. `probability` is the picked entry of `probabilities`. `confidence` is the `confidence` number on that answer. A missing confidence is 0.
+- **LLM.** Structured output asks the model for `value`, `probability`, and `confidence` as separate fields. `value` is an enum of the allowed ids, including abstain. `probability` is the model's number for the picked value. `confidence` is the model's separate 0–1 score. A value outside the enum is a transport error, not a verdict.
+
+The inconclusive option, and the split between probability and confidence, are ideas also used by the decision executor in TesterArmy's e2e (Apache-2.0). The prompts, thresholds, and client code here were written independently and were not copied from that project.
+
+### 14.2 Jev
+
+Jev uses the Vercel AI SDK `ai@7.0.162` and the TypeSafe provider `@ai-sdk/typesafe-ai@3.0.33` (`createTypeSafeAi` and `experimental_decide`). It does not use `@typesafe-ai/sdk`, and it does not hand-roll the HTTP client. Both versions are pinned in `@jevyjs/deciders-jev`.
+
+The provider posts to `{baseURL}/systemone`. The official TypeSafe HTTP API posts to `{base}/v1/systemone`, and the M1 allow-list entries do not include `/v1`. The adapter checks the allow-list first (`https://api.typesafe.ai`, `https://openrouter.ai/api`, `https://ai-gateway.vercel.sh/typesafe`), then appends `/v1` and passes that as `baseURL`. The user's key is passed in `createTypeSafeAi({ apiKey, baseURL })`. The call goes to TypeSafe (or another allow-listed host) with that key. Jevy does not proxy or resell it.
+
+The key is read only inside `decide`, from the env name on the selection, which defaults to `TYPESAFE_API_KEY`. `TYPESAFE_AI_API_KEY` is not accepted. Construction does not read the key. The provider module is imported dynamically inside the attempt, so building the decider, and replay, do not load it. `maxRetries` on the SDK call is 0; retries are the shared wrapper below. The key is redacted from error text and is not logged.
+
+A moving alias (`jev-latest`, `jev-preview`, including an author prefix) is rejected unless `allowMovingAlias` is set. When the pin is a concrete model and the response `modelId` differs, the answer is discarded and the call throws. When `allowMovingAlias` is set, the response model is accepted and the cache pin stays the requested alias.
+
+### 14.3 Kev
+
+Kev talks HTTP to a local System One server. The default base is `http://127.0.0.1:8009`, which is Kev's own server (`uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --port 8009`). That server accepts `kev-latest` (and `jev-latest`) as the HTTP `model` field; the hub pin is the checkpoint the process was started with, and the server does not report which checkpoint is loaded. `Decider.model` stays the pin (`kev-4b@v1.0` by default) so the cache key names the checkpoint. The request body uses `kev-latest` unless `requestModel` is set (for an Ollama tag, for example). Port `11434` gets an error that mentions Ollama.
+
+If the connection is refused, the error includes that `uv` command and the port, and it is retryable. It is never a pass or a fail. `KEV_API_KEY` is optional. When it is set, the request sends `Authorization: Bearer`, and the value is redacted from errors. The server is open when that variable is unset.
+
+`decide` throws `QuestionError` when `estimateSnapshotTokens` is over `KEV_SNAPSHOT_TOKEN_BUDGET` (6000). `callDecider` and `resolveDecision` already prune to 6000 when the decider id is `"kev"` (the validated context is 8192). A direct `decide` on an unpruned snapshot does not.
+
+### 14.4 LLM
+
+`llmDecider({ languageModel, model })` accepts any AI SDK `LanguageModel`. `model` is the pin stored on the decider and in the cache key. The id defaults to `llm:<model>`. Structured output uses `generateText` with `Output.object` and `jsonSchema`. The `ai` package is imported only on this path, and only inside the attempt. `maxRetries` is 0.
+
+`llmDecider({ adapter, model })` uses the M1 `LlmAdapter.complete(prompt, jsonSchema)` instead, which is what `deciders.llm` in config stores. That path does not import `ai`. `llmDeciderFromSelection` builds this form, with id `llm:<model>`.
+
+The prompt tells the model that the state is untrusted, that it must pick one allowed value, that the inconclusive value is for insufficient evidence, and that probability and confidence are different numbers. A low probability is not a vote for the opposite value.
+
+### 14.5 Retries, timeouts, and replay
+
+`retryWithBackoff` runs 3 attempts by default. The first backoff is 200ms and then doubles. Each attempt has its own timeout: 20s for Jev, 60s for Kev, 45s for the LLM decider. HTTP 408, 429, 500, 502, 503, and 529 are retried. HTTP 401 is not. A timeout is retryable. A network or protocol failure throws `DeciderTransportError`. It is not cached and it is not a pass or a fail. Callers can treat that error as `needs-review` or surface it.
+
+`openDecider(config, { mode: "replay" })` returns a decider whose `id` and `model` come from `selectDecider` and whose `decide` rejects with `DeciderTransportError`. The factory is not called, so no network client is constructed. `resolveDecision` in replay mode does not call `decide` on a cache hit or a miss.
+
+### 14.6 Tests
+
+Unit tests mock `fetch` or the adapter. `pnpm test` excludes `*.live.test.ts`. `pnpm test:live` runs `packages/deciders-jev/src/jev.live.test.ts`, which calls TypeSafe only when `TYPESAFE_API_KEY` is set and skips otherwise. CI runs `pnpm test` and does not run the live file.
+
+### 14.7 Still open
+
+These are recorded so they can be decided later. The code does not guess past them.
+
+- The gate uses confidence only, not `min(confidence, probability)`.
+- Yes/no and score are encoded as choice so abstain exists and so a missing noul confidence does not zero every yes/no.
+- The Kev server cannot prove the running checkpoint matches the pin. The wire model is `kev-latest`.
+- Kev-4B latency on a MacBook has not been measured. The roadmap exit criterion stays open.
+- With `allowMovingAlias`, the cache key uses the alias, not the model id the server resolved.
+- Adding required `probability` to schema version 1 rejects JSONL written by the M2 code. That code has not been released.
+- TypeSafe confidence is peakedness, so a peaked yes can have confidence below the probability of yes. The published example is probability 0.61 with confidence 0.42, which this gate treats as `needs-review` at the default 0.8 pass threshold.
+- `TYPESAFE_AI_API_KEY`, the provider's own env name, is not read. Only `TYPESAFE_API_KEY` is.

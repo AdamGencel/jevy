@@ -11,6 +11,11 @@ export default defineConfig({
   },
   test: {
     include: ["packages/*/src/**/*.test.ts"],
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "packages/*/src/**/*.live.test.ts",
+    ],
     environment: "node",
     passWithNoTests: false,
   },

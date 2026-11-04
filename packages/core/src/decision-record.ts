@@ -29,6 +29,7 @@ export const DECISION_RECORD_FIELDS = [
   "model",
   "answer",
   "confidence",
+  "probability",
   "verdict",
   "thresholds",
   "createdAt",
@@ -67,6 +68,8 @@ export interface DecisionRecord {
   readonly model: string;
   readonly answer: string;
   readonly confidence: number;
+  /** Probability of `answer`. Separate from `confidence`. */
+  readonly probability: number;
   readonly verdict: Verdict;
   readonly thresholds: Thresholds;
   readonly createdAt: string;
@@ -141,6 +144,7 @@ export function serialiseDecisionRecord(record: DecisionRecord): string {
     model: record.model,
     answer: record.answer,
     confidence: record.confidence,
+    probability: record.probability,
     verdict: record.verdict,
     thresholds: { pass: record.thresholds.pass, fail: record.thresholds.fail },
     createdAt: record.createdAt,
@@ -189,6 +193,7 @@ export function parseDecisionRecord(value: unknown): DecisionRecord {
     model: readLine(value["model"], "model"),
     answer: readLine(value["answer"], "answer"),
     confidence: readUnit(value["confidence"], "confidence"),
+    probability: readUnit(value["probability"], "probability"),
     verdict: readEnum(value["verdict"], VERDICTS, "verdict"),
     thresholds: readThresholds(value["thresholds"]),
     createdAt: readTime(value["createdAt"], "createdAt"),
