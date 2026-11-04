@@ -11,7 +11,7 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
    - Free alternatives, checked the same day: `@jevyjs`, `@jevyhq`, `@usejevy`, `@getjevy`, `@jevy-dev`; the unscoped `jevy-core`, `jevy-cli`, `jevy-web3`, `jevy-playwright` and `create-jevy` are also free.
    - **Decision:** all packages under `@jevyjs/*` (`@jevyjs/cli`, `@jevyjs/core`, `@jevyjs/playwright`, `@jevyjs/web3`, `@jevyjs/deciders-jev`, ...). Users run `npx jevy ...` once `@jevyjs/cli` is installed. The docs use these names.
    - The GitHub user `jevy` (Jevin Maltais, account since 2009) is unrelated, so the repo stays at `AdamGencel/jevy`.
-   - Similarly named Jev projects exist (`ZYRT3CH/jevyr`, an AI judge; `syumai/jevyoumean`; `markusbug/jevymarket`). `Ice-Hazymoon/jevwright` (npm `@hazymoon/jevwright`) overlaps with level 1.
+   - Similarly named Jev projects exist (`ZYRT3CH/jevyr`, an AI judge; `syumai/jevyoumean`; `markusbug/jevymarket`). `Ice-Hazymoon/jevwright` (npm `@hazymoon/jevwright`) overlaps with level 1. The npm package `jevy-vet` is a separate confusion risk; see open item 5.
    - *Blocks:* M0, M9.
 3. **Data licence and terms for published eval snapshots.**
    - The ~200-case public dataset contains accessibility snapshots, and possibly screenshots, of third-party public sites such as the Uniswap web app.
@@ -20,10 +20,21 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
    - The same terms check applies to recording promo demo videos on those sites.
    - If the dataset includes recorded Jev answers, TypeSafe's [Master Customer Agreement §2.3(b)](https://typesafe.ai/legal/mca) applies: Output may not be used to train a model to imitate Jev or to build a competing product. Publishing Jev answers for evaluation is fine (§4.2 assigns Output to the customer), but the dataset licence should carry that restriction forward. The Jev benchmarking dataset does the same with its "Jev Responses License" ([example](https://github.com/AppliedMachineLearning-Lab/jev-benchmarking/blob/main/responses/LICENSE_RESPONSES.md)). Never use Jev answers to fine-tune Kev or any other model.
    - *Blocks:* M7 (publishing the dataset), M8 demos.
+4. **Does a hosted runner that holds a user's key count as proxying?** Confirm in writing with TypeSafe before 0.1.0.
+   - [MCA §2.3(a)](https://typesafe.ai/legal/mca) bans offering the Services "as a standalone service". The project rule is that Jevy never proxies or resells Jev access, and every user brings their own `TYPESAFE_API_KEY`. Calls go from the user's machine or CI to an allow-listed host.
+   - 0.1.0 does not ship a hosted runner. The open point is any later runner or service that would hold a user's key and call Jev on their behalf. Adam confirms with TypeSafe, in writing, whether that arrangement counts as proxying.
+   - Record the answer here before M9. Do not build that runner on an assumption.
+   - Contact already used for brand questions: support@typesafe.ai.
+   - *Blocks:* M9 (0.1.0), and any hosted runner.
+5. **Is the name Jevy acceptable next to the pending JEV filing?** Confirm in writing with TypeSafe before 0.1.0.
+   - TypeSafe AI, Inc. filed the word mark **JEV** on 23 Sep 2026 (US serial [50124229](https://trademarks.justia.com/501/24/jev-50124229.html)), classes 9 and 42. It is pending. The desk check on 27 Oct 2026 (Decided, below) concluded the name was reasonable to keep, with the README disclaimer. That check is not a confirmation from TypeSafe.
+   - Before 0.1.0, Adam confirms with TypeSafe, in writing, that the name Jevy is acceptable beside that filing. Record the answer here. If they object, rename before publish. The code is cheap to rename before 1.0.
+   - The npm package `jevy-vet` is a possible confusion risk. It is an OpenCode plugin that uses TypeSafe Jev, so developers can meet that name and this project in the same place. The written check should mention it. The package does not, by itself, decide whether Jevy stays.
+   - *Blocks:* M9 (0.1.0).
 
 ## Decided (27 Oct 2026)
 
-- **Product.** Open-source TypeScript framework distributed on npm as a pnpm monorepo. Three levels: record (no tests), Playwright plugin (existing tests), properties (v0.2). Decision cache with deterministic CI replay; numbers and chain state checked in code; swappable `Decider` (Jev pinned to `jev-1.14.0`, Kev, generic LLM judge); `eval` command; Web3 wallet pack as the standout generic feature. v0.1 = levels 1 and 2 plus the wallet pack. The repo contains only the product packages; users install and configure Jevy for their own app.
+- **Product.** Open-source TypeScript framework distributed on npm as a pnpm monorepo. Three levels: record (no tests), Playwright plugin (existing tests), properties (v0.2). Decision cache committed to git; numbers and chain state checked in code; swappable `Decider` (Jev pinned to `jev-1.14.0`, Kev, generic LLM judge); `eval` command; Web3 wallet pack. v0.1 = levels 1 and 2 plus the wallet pack. The repo contains only the product packages; users install and configure Jevy for their own app. November 2026 positioning: Jevy is the AI layer for an existing `@playwright/test` suite. Action replay on its own is not a differentiator. Verdicts are cached too, keyed on decider and model, and re-gated on replay. See the README and DESIGN.
 - **Name.** Jevy. npm packages are `@jevyjs/*`, and the CLI is `@jevyjs/cli` with the `jevy` command (org created and placeholder published 28 Oct 2026).
 - **TypeSafe AI brand check (open item 1, resolved 27 Oct 2026).** "Jevy" is reasonable to keep, with the precautions below. Low-to-moderate risk.
   - Findings:
@@ -38,7 +49,7 @@ Status: design stage. Each open item names what it blocks. Resolve each one in a
     - "Jev" appears only to name the backend, for example in the `deciders-jev` adapter and in "works with Jev".
     - Link only to typesafe.ai and docs.typesafe.ai. Never link to look-alike domains such as jevtypesafeai.com, aijev.app, madewithjev.com or jevlaya.cc.
     - Every user brings their own `TYPESAFE_API_KEY`. Jevy never proxies or resells Jev access, because MCA §2.3(a) bans offering the Services "as a standalone service".
-  - Optional: email TypeSafe (support@typesafe.ai) before the 0.1.0 launch to say the project exists. This isn't required.
+  - Written confirmation from TypeSafe is still required before 0.1.0. The desk check above is not that confirmation. See open items 4 and 5. Contact: support@typesafe.ai.
 - **Repo home.** [github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy) (public, created 28 Oct 2026).
 - **Licence.** MIT, `Copyright (c) 2026 Adam Gencel` (see `LICENSE`).
 - **Jev access.** The maintainer has a direct TypeSafe Jev API key, read from the `TYPESAFE_API_KEY` environment variable. Keys are never committed.
