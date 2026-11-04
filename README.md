@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: M2 (decision cache) is in the tree.** `@jevyjs/core` implements the Decider types, verdicts, snapshot hashing, redaction, the `jevy.config.ts` loader (including `decider: "kev"`), and the decision cache. `jevy cache stats` and `jevy cache prune` work. There is still no decider adapter, recorder, or Playwright plugin. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The commands and APIs below show the *intended* usage and will change, except the cache section, which matches the code. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: M3 (deciders) is in the tree.** `@jevyjs/core` implements the Decider types, verdicts, snapshot hashing, redaction, the `jevy.config.ts` loader, and the decision cache. `jevy cache stats` and `jevy cache prune` work. `@jevyjs/deciders-jev`, `@jevyjs/deciders-kev`, and `@jevyjs/deciders-llm` implement the three deciders. There is still no recorder or Playwright plugin. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The recorder, plugin, and eval commands below are the *intended* usage. The cache section and the [decider setup](#decider-setup) match the code. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Jevy is an open-source TypeScript testing framework, distributed on npm. This repository contains only the Jevy product itself: the core library, the CLI, the Playwright plugin, the decider adapters and the Web3 wallet pack. You install it into your own project and configure it for your own app. No sample app ships with it. It uses AI where AI is good (picking the right element, judging whether a page means what you expect) and plain code everywhere else. What you commit is a normal, readable Playwright spec. AI decisions are recorded, so CI replays them deterministically.
 
@@ -29,7 +29,7 @@ The design principles that follow from this:
 
 ## Quickstart: set Jevy up for your app (intended)
 
-These steps show the planned setup. The packages in this repo are still stubs, and the only npm publish is the placeholder `@jevyjs/cli` 0.0.1.
+These steps show the planned setup once the packages are published. The decider packages exist in this repo and are `"private": true`. The only npm publish is the placeholder `@jevyjs/cli` 0.0.1. Use the [decider setup](#decider-setup) against a local checkout today.
 
 **1. Install** into a project that uses (or will use) Playwright:
 
@@ -39,29 +39,27 @@ pnpm add -D @jevyjs/deciders-jev      # and/or @jevyjs/deciders-kev, @jevyjs/dec
 pnpm add -D @jevyjs/web3 viem         # only if your app has wallet flows
 ```
 
-**2. Choose a decider and supply its credentials** through environment variables. Never commit them.
+**2. Choose a decider and supply its credentials** through environment variables. Never commit them. The working setup is [below](#decider-setup).
 
 ```bash
 # .env (gitignored)
-TYPESAFE_API_KEY=...          # if you use Jev
-# Kev runs locally: start its server separately (see Kev's README), then point Jevy at it
+TYPESAFE_API_KEY=...          # only if you opt in to Jev; read at call time
+# Kev runs locally. Start its server, then point Jevy at it (see Decider setup).
 ```
 
-**3. Configure** `jevy.config.ts` for your app:
+**3. Configure** `jevy.config.ts` for your app. There is no `baseURL` key in config today (the app URL is an argument to `record`, which is not built yet). Unknown keys are rejected.
 
 ```ts
-// jevy.config.ts (sketch; fields will change)
 import { defineConfig } from "@jevyjs/core";
 
 export default defineConfig({
-  baseURL: "http://localhost:3000",                  // your app
-  decider: "jev",                                    // one-line switch: "kev" keeps data local
+  decider: "jev", // one-line switch: "kev" keeps data local. There is no default.
   deciders: {
-    jev: { apiKeyEnv: "TYPESAFE_API_KEY", model: "jev-1.14.0" },
+    jev: { model: "jev-1.14.0" }, // key env is TYPESAFE_API_KEY
     kev: { baseUrl: "http://127.0.0.1:8009", model: "kev-4b@v1.0" },
-    llm: { adapter: myLlmAdapter },                  // any provider you plug in
+    // llm: { adapter, model: "example/model-id" }, // only when decider is "llm"
   },
-  cache: { dir: ".jevy/decisions" },                 // committed to git, redacted
+  cache: { dir: ".jevy/decisions" }, // committed to git, redacted
   ci: { needsReview: { pr: "warn", main: "fail" } },
 });
 ```
@@ -123,6 +121,42 @@ npx jevy properties propose --target packages/sdk/src   # intended, v0.2
 ```
 
 The v0.2 pilots are public OSS projects, so results can be shared: viem (TypeScript) and OpenZeppelin Contracts (Solidity).
+
+## Decider setup
+
+There is no default decider. Jev is used only when you set `decider: "jev"` (or pass that override). The key is read when a call is made, from `TYPESAFE_API_KEY` only. Jevy does not read `TYPESAFE_AI_API_KEY`, does not log the key, and does not proxy the request: your process calls TypeSafe with your key. The pin is `jev-1.14.0`. `jev-latest` and `jev-preview` are rejected unless `deciders.jev.allowMovingAlias` is true. The base URL must be `https://api.typesafe.ai` (the default), `https://openrouter.ai/api`, or `https://ai-gateway.vercel.sh/typesafe`.
+
+Kev is the local switch. The default pin is `kev-4b@v1.0` at `http://127.0.0.1:8009`, aimed at a normal developer laptop (Kev's README lists that checkpoint for a 32 GB Apple Silicon Mac). A smaller machine can set `model: "kev-0.8b@v1.0"`. Start Kev's own server for the pin you configured:
+
+```bash
+uv run --extra serve python -m kev.serve --run jaredpalmer/kev-4b@v1.0 --port 8009
+```
+
+If that server is not running, the error says so and includes that command. It does not become a pass or a fail. Snapshots sent to Kev are pruned to 6000 tokens when you go through `callDecider` or the cache. Set `KEV_API_KEY` only when the local server was started with one. Ollama's System One endpoint is the same adapter with `baseUrl: "http://127.0.0.1:11434"` and a `requestModel` for the pulled tag; the cache pin stays the `model` you configured.
+
+An LLM decider needs an explicit model pin. In config, pass `LlmAdapter` (`complete(prompt, jsonSchema)`). In code, you can instead pass any Vercel AI SDK `LanguageModel` to `llmDecider`. Each question is a bounded choice, including an inconclusive option. Picking that option is `needs-review`.
+
+`selectDecider` reads the config and returns the id, pin, and connection details. `openDecider` builds the client from the factories you pass. Replay mode does not call a factory and does not construct a network client.
+
+```ts
+import { loadConfig, openDecider } from "@jevyjs/core";
+import { jevDeciderFromSelection } from "@jevyjs/deciders-jev";
+import { kevDeciderFromSelection } from "@jevyjs/deciders-kev";
+import { llmDeciderFromSelection } from "@jevyjs/deciders-llm";
+
+const config = await loadConfig();
+const decider = await openDecider(config, {
+  factories: {
+    jev: jevDeciderFromSelection,
+    kev: kevDeciderFromSelection,
+    llm: llmDeciderFromSelection,
+  },
+});
+```
+
+Pass `{ mode: "replay" }` in CI so a cache miss does not open a client. Probability (how likely the chosen value is) and confidence (how peaked that belief is) are both stored. The verdict uses confidence only: a confident yes passes, a confident no fails, and a weak answer is `needs-review`. A network error throws `DeciderTransportError`. It is not cached as a pass or a fail.
+
+`pnpm test` never calls the network. `pnpm test:live` is an optional Jev smoke test that runs only when `TYPESAFE_API_KEY` is set, and CI does not run it. Details are in [DESIGN.md §14](docs/DESIGN.md#14-decisions-made-in-m3).
 
 ## Decision cache
 
@@ -192,7 +226,7 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 
 ## Packages
 
-The workspace matches this layout. `@jevyjs/core` and the cache commands in `@jevyjs/cli` are implemented. The other packages are still stubs.
+The workspace matches this layout. `@jevyjs/core`, the cache commands in `@jevyjs/cli`, and the three decider packages are implemented. `@jevyjs/playwright` and `@jevyjs/web3` are still stubs.
 
 | Package | Purpose |
 |---|---|

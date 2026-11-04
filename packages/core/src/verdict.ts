@@ -1,5 +1,5 @@
-import type { Question } from "./decider.js";
-import { validateAnswer } from "./decider.js";
+import type { Answer, Question } from "./decider.js";
+import { ABSTAIN_ID, validateAnswer } from "./decider.js";
 import { QuestionError } from "./errors.js";
 
 export type Verdict = "pass" | "fail" | "needs-review";
@@ -48,11 +48,12 @@ export function assertThresholds(thresholds: Thresholds): void {
  */
 export function gateAnswer(
   question: Question,
-  answer: { readonly value: string; readonly confidence: number },
+  answer: Answer,
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
 ): Verdict {
   assertThresholds(thresholds);
   validateAnswer(question, answer);
+  if (answer.value === ABSTAIN_ID) return "needs-review";
   switch (question.kind) {
     case "yesno":
       if (answer.confidence >= thresholds.pass) {
@@ -76,10 +77,7 @@ export function gateAnswer(
  * Yes/no is not converted into P(the statement holds): that conversion flipped
  * a weak answer. Choice has no probability of "yes" either. Use `gateAnswer`.
  */
-export function probabilityOfYes(
-  question: Question,
-  answer: { readonly value: string; readonly confidence: number },
-): number {
+export function probabilityOfYes(question: Question, answer: Answer): number {
   validateAnswer(question, answer);
   switch (question.kind) {
     case "yesno":

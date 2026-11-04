@@ -1,6 +1,6 @@
 # Contributing to Jevy
 
-Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo. `@jevyjs/core` implements the M1 decision layer and the M2 decision cache. `@jevyjs/cli` implements `jevy cache stats` and `jevy cache prune`. The other packages are still stubs. The most useful contributions right now are still feedback on the design docs.
+Thanks for your interest. Jevy is a personal open-source project maintained by Adam Gencel (sole maintainer; no company affiliation). The M0 toolchain is in the repo. `@jevyjs/core` implements the M1 decision layer and the M2 decision cache. `@jevyjs/cli` implements `jevy cache stats` and `jevy cache prune`. `@jevyjs/deciders-jev`, `@jevyjs/deciders-kev`, and `@jevyjs/deciders-llm` implement the M3 deciders. `@jevyjs/playwright` and `@jevyjs/web3` are still stubs. The most useful contributions right now are still feedback on the design docs.
 
 ## Right now
 
@@ -35,8 +35,8 @@ Signed-off-by: Your Name <you@example.com>
 - **Changesets:** every user-facing change needs a changeset (`pnpm changeset`). A change that only touches the toolchain, and does not change published behaviour, does not. Nothing in this repo publishes to npm automatically.
 - **Publishing:** every package under `packages/` is `"private": true` until the 0.1.0 release, so a stray `pnpm publish` cannot ship them. Changesets can still version them. Remove `"private"` as part of the 0.1.0 release, before the first real publish. Leave `publishConfig.access` set to `"public"`.
 - **Tests:**
-  - Use the fake decider in unit tests; never call hosted models in CI.
-  - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.
+  - Use the fake decider in unit tests. `pnpm test` mocks every transport and does not call hosted models.
+  - `pnpm test:live` is the opt-in Jev smoke test. It runs only when `TYPESAFE_API_KEY` is set, and CI does not run it.
 - **Product only:** the repo holds the Jevy packages. Please don't add example apps or site-specific code (for example for Uniswap). Demos are recorded videos kept outside the repo, and package tests use small fixtures.
 - **Scope:** v0.1 is Playwright only. Please discuss Cypress or API-level adapters in an issue first. Mobile is not planned.
 - **Core principles a PR must not break:**

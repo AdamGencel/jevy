@@ -7,6 +7,13 @@ import type { AccessibilityNode } from "./snapshot.js";
  */
 export const MAX_CHOICE_OPTIONS = 255;
 
+/**
+ * Option id every decider appends so the model can abstain.
+ * An answer of this value is `needs-review`, however high its confidence is.
+ * Callers cannot use it as their own option id.
+ */
+export const ABSTAIN_ID = "__jevy_abstain";
+
 export const MIN_SCORE_LEVELS = 2;
 export const MAX_SCORE_LEVELS = 10;
 
@@ -42,7 +49,17 @@ export type Question = ChoiceQuestion | YesNoQuestion | ScoreQuestion;
 
 export interface Answer {
   readonly value: string;
+  /**
+   * How peaked the decider's belief is, from 0 to 1.
+   * The verdict gate reads this number. It is not the probability of `value`.
+   */
   readonly confidence: number;
+  /**
+   * Probability of `value`, from 0 to 1, kept separate from confidence.
+   * Real deciders always set it. A hand-built fake may omit it; the cache
+   * then stores the confidence again so the record still has both fields.
+   */
+  readonly probability?: number;
   readonly raw?: unknown;
 }
 
@@ -146,6 +163,18 @@ export function validateAnswer(question: Question, answer: Answer): void {
       "Answer confidence must be a finite number from 0 to 1",
     );
   }
+  if (
+    answer.probability !== undefined &&
+    (typeof answer.probability !== "number" ||
+      !Number.isFinite(answer.probability) ||
+      answer.probability < 0 ||
+      answer.probability > 1)
+  ) {
+    throw new QuestionError(
+      "Answer probability must be a finite number from 0 to 1",
+    );
+  }
+  if (answer.value === ABSTAIN_ID) return;
   switch (question.kind) {
     case "yesno":
       if (answer.value !== "yes" && answer.value !== "no") {
@@ -215,6 +244,11 @@ function validateChoice(question: ChoiceQuestion): void {
     if (option.id.trim().length === 0 || option.label.trim().length === 0) {
       throw new QuestionError("Choice option ids and labels must be non-empty");
     }
+    if (option.id === ABSTAIN_ID) {
+      throw new QuestionError(
+        `Choice option id "${ABSTAIN_ID}" is reserved for an inconclusive answer`,
+      );
+    }
     if (seen.has(option.id)) {
       throw new QuestionError(`Duplicate choice option id "${option.id}"`);
     }
@@ -233,6 +267,11 @@ function validateScore(question: ScoreQuestion): void {
   for (const level of question.levels) {
     if (level.trim().length === 0) {
       throw new QuestionError("Score levels must be non-empty");
+    }
+    if (level === ABSTAIN_ID) {
+      throw new QuestionError(
+        `Score level "${ABSTAIN_ID}" is reserved for an inconclusive answer`,
+      );
     }
     if (seen.has(level)) {
       throw new QuestionError(`Duplicate score level "${level}"`);

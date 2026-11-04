@@ -757,6 +757,7 @@ function makeRecord(overrides: {
   readonly reviewedBy?: string | null;
   readonly answer?: string;
   readonly confidence?: number;
+  readonly probability?: number;
   readonly verdict?: Verdict;
 }): DecisionRecord {
   const createdAt = overrides.createdAt ?? "2026-10-28T00:00:00.000Z";
@@ -775,6 +776,7 @@ function makeRecord(overrides: {
     model: "fake-1",
     answer: overrides.answer ?? "yes",
     confidence: overrides.confidence ?? 0.93,
+    probability: overrides.probability ?? overrides.confidence ?? 0.93,
     verdict: overrides.verdict ?? "pass",
     thresholds: { pass: 0.8, fail: 0.5 },
     createdAt,

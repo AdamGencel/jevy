@@ -119,7 +119,11 @@ export async function resolveDecision(
           input.mode === "replay-or-query"
             ? { ...stored, lastUsedAt: at }
             : stored,
-        answer: { value: stored.answer, confidence: stored.confidence },
+        answer: {
+          value: stored.answer,
+          confidence: stored.confidence,
+          probability: stored.probability,
+        },
       };
     }
   }
@@ -175,6 +179,7 @@ export async function resolveDecision(
     model,
     answer: answer.value,
     confidence: answer.confidence,
+    probability: answer.probability ?? answer.confidence,
     verdict,
     thresholds,
     createdAt: at,
@@ -189,7 +194,11 @@ export async function resolveDecision(
     verdict,
     ...identity,
     record,
-    answer: { value: answer.value, confidence: answer.confidence },
+    answer: {
+      value: answer.value,
+      confidence: answer.confidence,
+      probability: answer.probability ?? answer.confidence,
+    },
   };
 }
 

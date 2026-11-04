@@ -32,3 +32,20 @@ export class CacheError extends JevyError {}
  * instead of `needs-review`. The decider is not called.
  */
 export class CacheMissError extends CacheError {}
+
+/**
+ * The decider could not get an answer from its model.
+ * This is a transport or protocol failure, never a pass or a fail.
+ * `retryable` is true when another attempt might succeed.
+ */
+export class DeciderTransportError extends JevyError {
+  public readonly retryable: boolean;
+
+  public constructor(
+    message: string,
+    options?: { readonly retryable?: boolean },
+  ) {
+    super(message);
+    this.retryable = options?.retryable ?? false;
+  }
+}

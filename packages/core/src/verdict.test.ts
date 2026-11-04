@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Question } from "./decider.js";
 import { QuestionError } from "./errors.js";
+import { ABSTAIN_ID } from "./decider.js";
 import { DEFAULT_THRESHOLDS, gateAnswer, probabilityOfYes } from "./verdict.js";
 
 const yesno: Question = {
@@ -113,6 +114,19 @@ describe("verdict thresholds", () => {
         { pass: 0.4, fail: 0.5 },
       ),
     ).toThrow(QuestionError);
+    expect(
+      gateAnswer(yesno, { value: ABSTAIN_ID, confidence: 1, probability: 0.9 }),
+    ).toBe("needs-review");
+    expect(
+      gateAnswer(choice, {
+        value: ABSTAIN_ID,
+        confidence: 1,
+        probability: 0.9,
+      }),
+    ).toBe("needs-review");
+    expect(
+      gateAnswer(score, { value: ABSTAIN_ID, confidence: 1, probability: 0.9 }),
+    ).toBe("needs-review");
     expect(() => gateAnswer(yesno, { value: "YES", confidence: 1 })).toThrow(
       QuestionError,
     );
