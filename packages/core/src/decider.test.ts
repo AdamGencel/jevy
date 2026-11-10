@@ -10,6 +10,11 @@ import { QuestionError, SnapshotError } from "./errors.js";
 import { hashSnapshot } from "./hash.js";
 import { parseConfig } from "./config.js";
 import type { DecisionState } from "./decider.js";
+import { estimateSnapshotTokens } from "./hash.js";
+import {
+  DEFAULT_SNAPSHOT_TOKEN_BUDGET,
+  KEV_SNAPSHOT_TOKEN_BUDGET,
+} from "./prune.js";
 
 describe("decider contract", () => {
   it("caps choice options at 255 and checks score levels", () => {
@@ -102,6 +107,39 @@ describe("decider contract", () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+
+  it("prunes to the budget of the decider it calls", async () => {
+    const sentTokens = new Map<string, number>();
+    const fake = (id: string): Decider => ({
+      id,
+      model: `${id}-1`,
+      decide(state) {
+        sentTokens.set(id, estimateSnapshotTokens(state.snapshot));
+        return Promise.resolve({ check: { value: "yes", confidence: 1 } });
+      },
+    });
+    const snapshot = {
+      role: "main",
+      children: Array.from({ length: 390 }, (_, index) => ({
+        role: "paragraph",
+        name: `para${String(index)} `.repeat(25),
+      })),
+    };
+    const questions = { check: { kind: "yesno", prompt: "Shown?" } } as const;
+
+    await callDecider(fake("kev"), { snapshot }, questions);
+    await callDecider(fake("jev"), { snapshot }, questions);
+    // A stray deciderId does not override the decider being called.
+    await callDecider(fake("kev"), { snapshot }, questions, {
+      deciderId: "jev",
+    });
+
+    const kev = sentTokens.get("kev") ?? Infinity;
+    const jev = sentTokens.get("jev") ?? 0;
+    expect(kev).toBeLessThanOrEqual(KEV_SNAPSHOT_TOKEN_BUDGET);
+    expect(jev).toBeGreaterThan(KEV_SNAPSHOT_TOKEN_BUDGET);
+    expect(jev).toBeLessThanOrEqual(DEFAULT_SNAPSHOT_TOKEN_BUDGET);
   });
 
   it("rejects a screenshot on the decision state", async () => {

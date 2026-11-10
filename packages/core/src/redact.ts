@@ -10,7 +10,7 @@ export const REDACTED = "[REDACTED]";
 const BIP39 = new Set(BIP39_ENGLISH_WORDS);
 
 const SECRET_FIELD_NAME =
-  /password|passcode|secret|api[-_ ]?key|mnemonic|seed phrase|private key/i;
+  /password|passcode|passphrase|secret|api[-_ ]?key|mnemonic|seed[-_ ]?phrase|recovery[-_ ]?(?:phrase|words?)|private[-_ ]?key/i;
 
 const SECRET_FIELD_ROLES = new Set(["textbox", "searchbox"]);
 
@@ -22,9 +22,40 @@ const SECRET_AUTOCOMPLETE = new Set([
   "cc-csc",
 ]);
 
-const WALLET_SECRET_KEY = /key|secret|seed|mnemonic|password|token/i;
+/**
+ * Wallet field names are split into words (`privateKey` → private, key).
+ * A field is secret when one word, or two adjacent words, name a secret.
+ * Plain `token`, `key` or `publicKey` are not secret: on an approve prompt the
+ * token address is the thing under test. Their values still pass through the
+ * text patterns, so a raw key in any field is caught there.
+ */
+const WALLET_SECRET_WORDS = new Set([
+  "secret",
+  "seed",
+  "mnemonic",
+  "password",
+  "passphrase",
+  "passcode",
+  "privkey",
+  "apikey",
+]);
 
-const SEED_LENGTHS = [24, 21, 18, 15, 12] as const;
+const WALLET_SECRET_PAIRS = new Set([
+  "private key",
+  "api key",
+  "access token",
+  "auth token",
+  "refresh token",
+  "session token",
+  "bearer token",
+  "recovery phrase",
+]);
+
+/** Separators allowed between seed words: whitespace, list numbers, punctuation. */
+const SEED_SEPARATOR = /^[\s\d.,;:()#|/-]{1,16}$/;
+
+/** The shortest BIP-39 phrase. Longer runs are redacted whole. */
+const MIN_SEED_WORDS = 12;
 
 interface TextPattern {
   readonly name: string;
@@ -33,10 +64,11 @@ interface TextPattern {
 
 /**
  * Built-in patterns. They always run; a project can add rules, not remove
- * these. A 64-hex Ethereum secret is redacted. A 40-hex address is not:
- * addresses are public and are often the thing under test. The tradeoff is
- * that a transaction hash has the same shape as a secret key and is redacted
- * too. See DESIGN.md.
+ * these. 64 hex characters, with or without `0x`, are redacted as a private
+ * key. A 40-hex address is not: addresses are public and are often the thing
+ * under test. The tradeoff is that a transaction hash (or any SHA-256 hex
+ * digest) has the same shape as a secret key and is redacted too. See
+ * DESIGN.md.
  */
 const TEXT_PATTERNS: readonly TextPattern[] = [
   {
@@ -56,7 +88,16 @@ const TEXT_PATTERNS: readonly TextPattern[] = [
   },
   { name: "openai-style-key", pattern: /\bsk-[A-Za-z0-9]{20,}\b/g },
   { name: "bearer", pattern: /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/g },
-  { name: "eth-private-key", pattern: /\b0x[a-fA-F0-9]{64}\b/g },
+  { name: "hex-private-key", pattern: /\b(?:0x)?[a-fA-F0-9]{64}\b/g },
+  {
+    name: "jwt",
+    pattern:
+      /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*(?![A-Za-z0-9_-])/g,
+  },
+  {
+    name: "google-api-key",
+    pattern: /\bAIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/g,
+  },
   {
     name: "assignment",
     pattern:
@@ -110,7 +151,122 @@ export function redactSnapshot(
   rules: readonly RedactRule[] = [],
 ): AccessibilityNode {
   const seen = new WeakSet();
-  return redactNode(snapshot, rules, seen);
+  return redactSplitSeedPhrases(redactNode(snapshot, rules, seen));
+}
+
+type SeedField = "name" | "description" | "value" | "valuetext";
+
+const SEED_FIELDS: readonly SeedField[] = [
+  "name",
+  "description",
+  "value",
+  "valuetext",
+];
+
+interface FieldEntry {
+  readonly node: AccessibilityNode;
+  readonly field: SeedField;
+  readonly text: string;
+  readonly start: number;
+}
+
+interface Span {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * True when a seed phrase is spread over several nodes, for example a wallet
+ * that shows one word per cell. Text fields are read in document order.
+ */
+export function containsSplitSeedPhrase(snapshot: AccessibilityNode): boolean {
+  return findSeedSpans(treeText(snapshot).text).length > 0;
+}
+
+/**
+ * Redact a seed phrase whose words sit in separate nodes. Each word is
+ * replaced in its own node; list numbers between the words are kept.
+ */
+function redactSplitSeedPhrases(
+  snapshot: AccessibilityNode,
+): AccessibilityNode {
+  const { text, entries } = treeText(snapshot);
+  const spans = findSeedSpans(text);
+  if (spans.length === 0) return snapshot;
+
+  const edits = new Map<
+    AccessibilityNode,
+    Partial<Record<SeedField, string>>
+  >();
+  for (const entry of entries) {
+    const ranges = wordRangesInSpans(entry, spans);
+    if (ranges.length === 0) continue;
+    let redacted = entry.text;
+    for (const range of [...ranges].reverse()) {
+      redacted =
+        redacted.slice(0, range.start) + REDACTED + redacted.slice(range.end);
+    }
+    const edit = edits.get(entry.node) ?? {};
+    edit[entry.field] = redacted;
+    edits.set(entry.node, edit);
+  }
+  return applyFieldEdits(snapshot, edits);
+}
+
+function treeText(snapshot: AccessibilityNode): {
+  text: string;
+  entries: FieldEntry[];
+} {
+  const entries: FieldEntry[] = [];
+  let text = "";
+  const visit = (node: AccessibilityNode): void => {
+    for (const field of SEED_FIELDS) {
+      const value = node[field];
+      if (typeof value !== "string" || value.length === 0) continue;
+      if (text.length > 0) text += " ";
+      entries.push({ node, field, text: value, start: text.length });
+      text += value;
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(snapshot);
+  return { text, entries };
+}
+
+/** Local ranges, one per span, from the first to the last word inside it. */
+function wordRangesInSpans(entry: FieldEntry, spans: readonly Span[]): Span[] {
+  const entryEnd = entry.start + entry.text.length;
+  const ranges: Span[] = [];
+  for (const span of spans) {
+    const from = Math.max(span.start, entry.start) - entry.start;
+    const to = Math.min(span.end, entryEnd) - entry.start;
+    if (from >= to) continue;
+    let first: number | undefined;
+    let last: number | undefined;
+    for (const token of wordTokens(entry.text)) {
+      if (token.start >= from && token.end <= to) {
+        first ??= token.start;
+        last = token.end;
+      }
+    }
+    if (first !== undefined && last !== undefined) {
+      ranges.push({ start: first, end: last });
+    }
+  }
+  return ranges;
+}
+
+function applyFieldEdits(
+  node: AccessibilityNode,
+  edits: ReadonlyMap<AccessibilityNode, Partial<Record<SeedField, string>>>,
+): AccessibilityNode {
+  const edit = edits.get(node);
+  const children = node.children?.map((child) => applyFieldEdits(child, edits));
+  return {
+    ...node,
+    ...edit,
+    ...(children !== undefined ? { children } : {}),
+  };
 }
 
 export function redactWallet(
@@ -138,11 +294,29 @@ function redactFields(
         "Wallet field values must be strings so they can be redacted",
       );
     }
-    redacted[key] = WALLET_SECRET_KEY.test(key)
+    redacted[key] = isWalletSecretKey(key)
       ? REDACTED
       : redactText(value, rules);
   }
   return redacted;
+}
+
+function isWalletSecretKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 0);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (word === undefined) continue;
+    if (WALLET_SECRET_WORDS.has(word)) return true;
+    const next = words[index + 1];
+    if (next !== undefined && WALLET_SECRET_PAIRS.has(`${word} ${next}`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function redactNode(
@@ -323,34 +497,23 @@ function assertStable(output: string, rules: readonly RedactRule[]): void {
   }
 }
 
-function redactSeedPhrases(input: string): string {
-  const tokens: { word: string; start: number; end: number }[] = [];
+interface WordToken {
+  readonly word: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+function wordTokens(input: string): WordToken[] {
+  const tokens: WordToken[] = [];
   for (const match of input.matchAll(/[A-Za-z]+/g)) {
     const start = match.index;
-    tokens.push({
-      word: match[0],
-      start,
-      end: start + match[0].length,
-    });
+    tokens.push({ word: match[0], start, end: start + match[0].length });
   }
+  return tokens;
+}
 
-  const spans: { start: number; end: number }[] = [];
-  let index = 0;
-  while (index < tokens.length) {
-    const length = seedLengthAt(input, tokens, index);
-    const first = tokens[index];
-    if (length === 0 || first === undefined) {
-      index += 1;
-      continue;
-    }
-    const last = tokens[index + length - 1];
-    if (last === undefined) {
-      index += 1;
-      continue;
-    }
-    spans.push({ start: first.start, end: last.end });
-    index += length;
-  }
+function redactSeedPhrases(input: string): string {
+  const spans = findSeedSpans(input);
   if (spans.length === 0) return input;
 
   let cursor = 0;
@@ -364,29 +527,53 @@ function redactSeedPhrases(input: string): string {
   return output;
 }
 
-function seedLengthAt(
-  input: string,
-  tokens: readonly { word: string; start: number; end: number }[],
-  index: number,
-): number {
-  for (const length of SEED_LENGTHS) {
-    if (index + length > tokens.length) continue;
+/**
+ * Runs of 12 or more BIP-39 words (12–24 word phrases, plus any BIP-39
+ * words that happen to sit next to them). Words may be
+ * separated by whitespace, list numbers (`1.`, `2)`) or punctuation such as
+ * commas. Each span runs from the first word to the last.
+ */
+function findSeedSpans(input: string): Span[] {
+  const tokens = wordTokens(input);
+  const spans: Span[] = [];
+  let index = 0;
+  while (index < tokens.length) {
+    const length = seedLengthAt(input, tokens, index);
     const first = tokens[index];
     const last = tokens[index + length - 1];
-    if (first === undefined || last === undefined) continue;
-    let words = true;
-    for (let offset = 0; offset < length; offset += 1) {
-      const token = tokens[index + offset];
-      if (token === undefined || !BIP39.has(token.word.toLowerCase())) {
-        words = false;
-        break;
-      }
+    if (length === 0 || first === undefined || last === undefined) {
+      index += 1;
+      continue;
     }
-    if (!words) continue;
-    const slice = input.slice(first.start, last.end);
-    if (/^[A-Za-z]+(?:\s+[A-Za-z]+)*$/.test(slice)) return length;
+    spans.push({ start: first.start, end: last.end });
+    index += length;
   }
-  return 0;
+  return spans;
+}
+
+/**
+ * Length of the run of BIP-39 words starting at `index`, or 0 when it is
+ * shorter than a seed phrase. The whole run is returned, not just 12 or 24
+ * words of it: a heading word such as "Phrase" is a BIP-39 word too, and
+ * stopping at a phrase length would leave the last seed word exposed.
+ */
+function seedLengthAt(
+  input: string,
+  tokens: readonly WordToken[],
+  index: number,
+): number {
+  let run = 0;
+  for (;;) {
+    const token = tokens[index + run];
+    if (token === undefined || !BIP39.has(token.word.toLowerCase())) break;
+    if (run > 0) {
+      const previous = tokens[index + run - 1];
+      if (previous === undefined) break;
+      if (!SEED_SEPARATOR.test(input.slice(previous.end, token.start))) break;
+    }
+    run += 1;
+  }
+  return run >= MIN_SEED_WORDS ? run : 0;
 }
 
 function replaceGlobal(
