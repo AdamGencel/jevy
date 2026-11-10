@@ -51,7 +51,7 @@ The design principles that follow from this:
 
 ## Quickstart: set Jevy up for your app (intended)
 
-These steps show the planned setup. The packages in this repo are still stubs, and the only npm publish is the placeholder `@jevyjs/cli` 0.0.1.
+These steps show the planned setup. Only `@jevyjs/core` is implemented so far; the other packages are still stubs, and the only npm publish is the placeholder `@jevyjs/cli` 0.0.1. Loading `jevy.config.ts` uses Node's built-in type stripping, so it needs Node 22.18 or later.
 
 **1. Install** into a project that uses (or will use) Playwright:
 
@@ -76,12 +76,12 @@ TYPESAFE_API_KEY=...          # if you use Jev
 import { defineConfig } from "@jevyjs/core";
 
 export default defineConfig({
-  baseURL: "http://localhost:3000",                  // your app
+  // your app's URL stays in playwright.config.ts (use.baseURL)
   decider: "jev",                                    // one-line switch: "kev" keeps data local
   deciders: {
     jev: { apiKeyEnv: "TYPESAFE_API_KEY", model: "jev-1.14.0" },
     kev: { baseUrl: "http://127.0.0.1:8009", model: "kev-4b@v1.0" },
-    llm: { adapter: myLlmAdapter },                  // any provider you plug in
+    llm: { adapter: myLlmAdapter, model: "provider/model-id" }, // any provider; the model pin is required
   },
   cache: { dir: ".jevy/decisions" },                 // committed to git, redacted, keyed on decider and model
   ci: { needsReview: { pr: "warn", main: "fail" } },
@@ -181,7 +181,7 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 
 ## Packages
 
-The workspace matches this layout. Each package builds, and none of them implement their milestone yet.
+The workspace matches this layout. Each package builds. `@jevyjs/core` implements its milestone (M1); the others are still stubs.
 
 | Package | Purpose |
 |---|---|
@@ -207,7 +207,7 @@ API keys come from environment variables (for example `TYPESAFE_API_KEY`) and mu
 
 ## Contributing and licence
 
-MIT, see [LICENSE](LICENSE). Contributions are welcome under the Developer Certificate of Origin (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Development needs Node >= 22 (`.nvmrc` is 22; CI also runs Node 24). Maintainer: Adam Gencel (sole maintainer).
+MIT, see [LICENSE](LICENSE). Contributions are welcome under the Developer Certificate of Origin (`git commit -s`); see [CONTRIBUTING.md](CONTRIBUTING.md). Development needs Node >= 22.18 (`.nvmrc` is 22; CI also runs Node 24). Maintainer: Adam Gencel (sole maintainer).
 
 ## Trademarks
 

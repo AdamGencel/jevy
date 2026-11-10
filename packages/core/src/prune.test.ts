@@ -56,6 +56,42 @@ describe("snapshot pruning", () => {
       pruneSnapshot(huge, { deciderId: "kev" }).approxTokens,
     ).toBeLessThanOrEqual(KEV_SNAPSHOT_TOKEN_BUDGET);
   });
+
+  it("prunes a large page in well under a second", () => {
+    const tree: AccessibilityNode = {
+      role: "main",
+      children: Array.from({ length: 1000 }, (_, outer) => ({
+        role: "list",
+        children: Array.from({ length: 9 }, (_, inner) => ({
+          role: "listitem",
+          name: `item ${String(outer)}-${String(inner)}`,
+        })),
+      })),
+    };
+    const started = performance.now();
+    const pruned = pruneSnapshot(tree);
+    const elapsed = performance.now() - started;
+    expect(pruned.nodeCount).toBeLessThanOrEqual(400);
+    expect(pruned.truncated).toBe(true);
+    // The previous leaf-by-leaf loop took several seconds on 10,000 nodes.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it("keeps the earliest content when it removes nodes", () => {
+    const tree: AccessibilityNode = {
+      role: "main",
+      children: Array.from({ length: 10 }, (_, index) => ({
+        role: "button",
+        name: `b${String(index)}`,
+      })),
+    };
+    const pruned = pruneSnapshot(tree, { maxNodes: 4 });
+    expect(pruned.snapshot.children?.map((child) => child.name)).toEqual([
+      "b0",
+      "b1",
+      "b2",
+    ]);
+  });
 });
 
 function page(): AccessibilityNode {

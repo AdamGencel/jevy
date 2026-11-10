@@ -44,6 +44,7 @@ export interface PrunedSnapshot {
  * Depth is cut first (root is depth 0). Then, while the tree is over the
  * node or token budget, the deepest leaf is removed. Ties go to the
  * rightmost path, so earlier content survives. The root is never removed.
+ * The removal order is fixed up front, so this runs in O(n log n).
  * If the root alone is over the token budget, its name is shortened.
  * `truncated` is not part of the snapshot hash.
  */
@@ -60,22 +61,30 @@ export function pruneSnapshot(
   tree = cut.node;
   let truncated = cut.truncated;
 
-  const removalLimit = countNodes(tree);
-  let guard = 0;
-  while (
-    (countNodes(tree) > maxNodes || estimateSnapshotTokens(tree) > maxTokens) &&
-    guard < removalLimit
-  ) {
-    const leaves = collectLeaves(tree, []);
-    const victim = pickLeaf(leaves);
-    if (victim === undefined) {
-      tree = shortenRoot(tree, maxTokens);
-      truncated = true;
-      break;
-    }
-    tree = removeAt(tree, victim);
+  const order = removalOrder(tree);
+  const total = order.length + 1;
+  const fits = (candidate: AccessibilityNode, count: number): boolean =>
+    count <= maxNodes && estimateSnapshotTokens(candidate) <= maxTokens;
+
+  if (!fits(tree, total)) {
     truncated = true;
-    guard += 1;
+    // Removing more nodes never grows the tree, so the smallest number of
+    // removals that fits can be found by binary search.
+    let low = Math.min(Math.max(total - maxNodes, 1), order.length);
+    let high = order.length;
+    let best: AccessibilityNode | undefined;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = removeFirst(tree, order, mid);
+      if (fits(candidate, total - mid)) {
+        best = candidate;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    tree =
+      best ?? shortenRoot(removeFirst(tree, order, order.length), maxTokens);
   }
 
   return {
@@ -105,54 +114,42 @@ function cutDepth(
   return { node: withChildren(node, children), truncated };
 }
 
-function collectLeaves(
-  node: AccessibilityNode,
-  path: readonly number[],
-): number[][] {
-  const children = node.children ?? [];
-  if (children.length === 0) {
-    return path.length === 0 ? [] : [[...path]];
-  }
-  const leaves: number[][] = [];
-  for (let index = 0; index < children.length; index += 1) {
-    const child = children[index];
-    if (child === undefined) continue;
-    leaves.push(...collectLeaves(child, [...path, index]));
-  }
-  return leaves;
+/**
+ * Every non-root node in the order the budget removes it: deepest first, and
+ * among equal depths the one latest in document order. A node always comes
+ * after its descendants, so removing any prefix of this order leaves a tree,
+ * and the node removed at each step is a leaf at that point.
+ */
+function removalOrder(root: AccessibilityNode): AccessibilityNode[] {
+  const nodes: { node: AccessibilityNode; depth: number; index: number }[] = [];
+  const visit = (node: AccessibilityNode, depth: number): void => {
+    for (const child of node.children ?? []) {
+      nodes.push({ node: child, depth: depth + 1, index: nodes.length });
+      visit(child, depth + 1);
+    }
+  };
+  visit(root, 0);
+  nodes.sort((left, right) =>
+    left.depth !== right.depth
+      ? right.depth - left.depth
+      : right.index - left.index,
+  );
+  return nodes.map((entry) => entry.node);
 }
 
-/** Deepest first, then the lexicographically greatest path. */
-function pickLeaf(leaves: readonly number[][]): readonly number[] | undefined {
-  return [...leaves].sort(preferDrop).at(0);
-}
-
-function preferDrop(left: readonly number[], right: readonly number[]): number {
-  if (left.length !== right.length) return right.length - left.length;
-  const width = Math.max(left.length, right.length);
-  for (let index = 0; index < width; index += 1) {
-    const difference = (right[index] ?? -1) - (left[index] ?? -1);
-    if (difference !== 0) return difference;
-  }
-  return 0;
-}
-
-function removeAt(
-  node: AccessibilityNode,
-  path: readonly number[],
+function removeFirst(
+  root: AccessibilityNode,
+  order: readonly AccessibilityNode[],
+  count: number,
 ): AccessibilityNode {
-  const [head, ...tail] = path;
-  if (head === undefined) return node;
-  const children = [...(node.children ?? [])];
-  const child = children[head];
-  if (child === undefined) return node;
-  if (tail.length === 0) {
-    children.splice(head, 1);
-  } else {
-    const replacement = removeAt(child, tail);
-    children.splice(head, 1, replacement);
-  }
-  return withChildren(node, children);
+  const removed = new Set(order.slice(0, count));
+  const rebuild = (node: AccessibilityNode): AccessibilityNode => {
+    const children = (node.children ?? [])
+      .filter((child) => !removed.has(child))
+      .map(rebuild);
+    return withChildren(node, children);
+  };
+  return rebuild(root);
 }
 
 function shortenRoot(

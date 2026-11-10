@@ -50,6 +50,10 @@ export function prepareDecisionState(
 /**
  * The only supported way to invoke a decider from Jevy code.
  * The decider sees the prepared state, never the raw page.
+ *
+ * The token budget follows `decider.id`, so a Kev decider gets Kev's budget
+ * without the caller passing `deciderId`. A `deciderId` in `options` is
+ * ignored here; an explicit `maxTokens` still wins.
  */
 export async function callDecider(
   decider: Decider,
@@ -58,7 +62,10 @@ export async function callDecider(
   options?: PruneOptions,
 ): Promise<Readonly<Record<string, Answer>>> {
   validateQuestions(questions);
-  const prepared = prepareDecisionState(state, options);
+  const prepared = prepareDecisionState(state, {
+    ...options,
+    deciderId: decider.id,
+  });
   const answers = await decider.decide(toDecisionState(prepared), questions);
   assertAnswers(questions, answers);
   return answers;

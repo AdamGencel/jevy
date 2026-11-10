@@ -4,7 +4,11 @@ import {
   normaliseText,
 } from "./normalise.js";
 import { RedactionError, SnapshotError } from "./errors.js";
-import { redactSnapshot, redactText } from "./redact.js";
+import {
+  containsSplitSeedPhrase,
+  redactSnapshot,
+  redactText,
+} from "./redact.js";
 import type { RedactRule } from "./redact.js";
 import type {
   AccessibilityNode,
@@ -31,6 +35,11 @@ export function projectSnapshot(
   const redacted = redactSnapshot(snapshot, rules);
   const normalised = normaliseSnapshot(redacted, options?.normalise);
   assertTreeRedacted(normalised, rules);
+  if (containsSplitSeedPhrase(normalised)) {
+    throw new RedactionError(
+      "Redaction failed closed: a seed phrase spread over several nodes was still present on the normalised snapshot. It was not hashed or returned.",
+    );
+  }
   if (options?.region === undefined) return normalised;
   return sliceRegion(normalised, options.region, options.normalise);
 }

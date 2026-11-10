@@ -8,7 +8,7 @@
   "type": "module",
   "packageManager": "pnpm@10.33.4",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
     "build": "pnpm --filter \"./packages/*\" run build",
