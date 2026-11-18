@@ -5,6 +5,7 @@ import {
   normaliseText,
 } from "./normalise.js";
 import { ConfigError, RedactionError, SnapshotError } from "./errors.js";
+import { isRecord } from "./guards.js";
 import { resolveNormalise } from "./snapshot.js";
 import {
   containsSplitSeedPhrase,
@@ -124,37 +125,48 @@ function serialiseRegExp(pattern: RegExp): SerialisedRegExp {
 
 /**
  * Each kind has its own keys, so a bare RegExp, a `{ pattern }` rule and a
- * `{ role }` rule cannot serialise to the same value. A rule that is none of
- * them is rejected rather than silently fingerprinted as nothing.
+ * `{ role }` rule cannot serialise to the same value. Rules may reach here
+ * without passing `parseConfig`, so the shape is checked: a malformed rule is
+ * a ConfigError, not a TypeError, and a rule that sets both `pattern` and
+ * `role` keeps both halves, because redaction applies both.
  */
 function serialiseRedactRule(rule: RedactRule): unknown {
   if (rule instanceof RegExp) return serialiseRegExp(rule);
-  if ("pattern" in rule) {
-    return {
-      pattern: serialiseRegExp(rule.pattern),
-      ...(rule.replacement !== undefined
-        ? { replacement: rule.replacement }
-        : {}),
-    };
+  const value: unknown = rule;
+  if (!isRecord(value)) throw malformedRedactRule();
+  const { pattern, role, name, replacement } = value;
+  if (pattern === undefined && role === undefined) {
+    throw malformedRedactRule();
   }
-  if (typeof rule.role === "string") {
-    return {
-      role: rule.role,
-      ...(rule.name !== undefined
-        ? {
-            name:
-              typeof rule.name === "string"
-                ? rule.name
-                : serialiseRegExp(rule.name),
-          }
-        : {}),
-      ...(rule.replacement !== undefined
-        ? { replacement: rule.replacement }
-        : {}),
-    };
+  if (pattern !== undefined && !(pattern instanceof RegExp)) {
+    throw malformedRedactRule();
   }
-  throw new ConfigError(
-    "A redact rule must be a RegExp, { pattern }, or { role }",
+  if (role !== undefined && typeof role !== "string") {
+    throw malformedRedactRule();
+  }
+  if (
+    name !== undefined &&
+    typeof name !== "string" &&
+    !(name instanceof RegExp)
+  ) {
+    throw malformedRedactRule();
+  }
+  if (replacement !== undefined && typeof replacement !== "string") {
+    throw malformedRedactRule();
+  }
+  return {
+    ...(pattern !== undefined ? { pattern: serialiseRegExp(pattern) } : {}),
+    ...(role !== undefined ? { role } : {}),
+    ...(role !== undefined && name !== undefined
+      ? { name: typeof name === "string" ? name : serialiseRegExp(name) }
+      : {}),
+    ...(replacement !== undefined ? { replacement } : {}),
+  };
+}
+
+function malformedRedactRule(): ConfigError {
+  return new ConfigError(
+    "A redact rule must be a RegExp, { pattern: RegExp, replacement?: string }, or { role: string, name?: string | RegExp, replacement?: string }",
   );
 }
 

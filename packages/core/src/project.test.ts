@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { ConfigError } from "./errors.js";
 import {
   SNAPSHOT_HASH_VERSION,
   SNAPSHOT_RULES_VERSION,
@@ -6,6 +8,7 @@ import {
   snapshotDigest,
 } from "./project.js";
 import type { SnapshotProcessOptions } from "./project.js";
+import type { RedactRule } from "./redact.js";
 
 type Rules = Pick<SnapshotProcessOptions, "redact" | "normalise">;
 
@@ -211,6 +214,72 @@ describe("rules fingerprint", () => {
       rulesFingerprint({ redact: [{ role: "textbox", name: "a.b" }] }),
     ).not.toBe(
       rulesFingerprint({ redact: [{ role: "textbox", name: /a.b/ }] }),
+    );
+  });
+});
+
+describe("rules fingerprint format", () => {
+  it("hashes the hash version, the rules version, redact and normalise", () => {
+    const payload = JSON.stringify({
+      v: SNAPSHOT_HASH_VERSION,
+      rules: SNAPSHOT_RULES_VERSION,
+      redact: [
+        { source: "a", flags: "im" },
+        { pattern: { source: "b", flags: "" }, replacement: "[b]" },
+        { role: "textbox", name: { source: "c", flags: "i" } },
+      ],
+      normalise: {
+        disable: ["uuid"],
+        dropRoles: ["banner", "none", "presentation"],
+        replace: [{ pattern: { source: "d", flags: "" }, placeholder: "[d]" }],
+        unwrapUnnamedGeneric: false,
+      },
+    });
+    const expected = `sha256:${createHash("sha256").update(payload).digest("hex")}`;
+    expect(
+      rulesFingerprint({
+        redact: [
+          /a/gim,
+          { pattern: /b/, replacement: "[b]" },
+          { role: "textbox", name: /c/iy },
+        ],
+        normalise: {
+          disable: ["uuid"],
+          dropRoles: ["banner"],
+          replace: [{ pattern: /d/, placeholder: "[d]" }],
+          unwrapUnnamedGeneric: false,
+        },
+      }),
+    ).toBe(expected);
+  });
+});
+
+describe("rules fingerprint on malformed rules", () => {
+  // These shapes bypass parseConfig. The fingerprint must not throw a bare
+  // TypeError, and must not leave out part of a rule that redaction uses.
+  const malformed: unknown[] = [
+    null,
+    "order-1",
+    { pattern: "order-\\d+" },
+    { role: 3 },
+    { role: "textbox", name: 5 },
+    { pattern: /a/, replacement: 5 },
+    {},
+  ];
+  for (const rule of malformed) {
+    it(`rejects ${JSON.stringify(rule)} with ConfigError`, () => {
+      expect(() => rulesFingerprint({ redact: [rule as RedactRule] })).toThrow(
+        ConfigError,
+      );
+    });
+  }
+
+  it("covers the role half of a rule that sets both pattern and role", () => {
+    // redact.ts applies both halves of such a rule, so both reach the hash.
+    // The RedactRule union accepts this shape, though parseConfig rejects it.
+    const both = (role: string): RedactRule => ({ pattern: /a/, role });
+    expect(rulesFingerprint({ redact: [both("textbox")] })).not.toBe(
+      rulesFingerprint({ redact: [both("searchbox")] }),
     );
   });
 });
