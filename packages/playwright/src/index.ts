@@ -1,2 +1,3 @@
-// Stub. The Playwright plugin (toSatisfy, locator repair, reporter) lands in later milestones.
-export {};
+// toSatisfy, fixtures, locator repair and the reporter land in later steps.
+export { parseAriaSnapshot } from "./parse.js";
+export { snapshotAccessibility } from "./snapshot.js";
