@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { callDecider } from "./prepare.js";
 import {
   MAX_CHOICE_OPTIONS,
+  assertAnswers,
+  validateAnswer,
   validateQuestion,
+  type Answer,
   type Decider,
   type Question,
 } from "./decider.js";
@@ -98,7 +101,10 @@ describe("decider contract", () => {
           },
         },
       );
-      expect(answers["check"]).toEqual({ value: "yes", confidence: 0.95 });
+      expect(answers).toEqual({
+        answers: { check: { value: "yes", confidence: 0.95 } },
+        truncated: false,
+      });
       expect(calls).toEqual([]);
       const encoded = JSON.stringify(seen);
       expect(encoded).not.toContain("ada@example.com");
@@ -128,12 +134,20 @@ describe("decider contract", () => {
     };
     const questions = { check: { kind: "yesno", prompt: "Shown?" } } as const;
 
-    await callDecider(fake("kev"), { snapshot }, questions);
-    await callDecider(fake("jev"), { snapshot }, questions);
+    const kevResult = await callDecider(fake("kev"), { snapshot }, questions);
+    const jevResult = await callDecider(fake("jev"), { snapshot }, questions);
     // A stray deciderId does not override the decider being called.
-    await callDecider(fake("kev"), { snapshot }, questions, {
-      deciderId: "jev",
-    });
+    const strayResult = await callDecider(
+      fake("kev"),
+      { snapshot },
+      questions,
+      { deciderId: "jev" },
+    );
+
+    // This page is over both budgets, so both deciders see a cut snapshot.
+    expect(kevResult.truncated).toBe(true);
+    expect(jevResult.truncated).toBe(true);
+    expect(strayResult.truncated).toBe(true);
 
     const kev = sentTokens.get("kev") ?? Infinity;
     const jev = sentTokens.get("jev") ?? 0;
@@ -161,5 +175,162 @@ describe("decider contract", () => {
         check: { kind: "yesno", prompt: "Shown?" },
       }),
     ).rejects.toBeInstanceOf(SnapshotError);
+  });
+
+  it("reports whether the snapshot the decider saw was truncated", async () => {
+    const nodesSeen: number[] = [];
+    const decider: Decider = {
+      id: "fake",
+      model: "fake-1",
+      decide(state) {
+        nodesSeen.push(state.snapshot.children?.length ?? 0);
+        return Promise.resolve({ check: { value: "no", confidence: 1 } });
+      },
+    };
+    const snapshot = {
+      role: "main",
+      children: Array.from({ length: 10 }, (_, index) => ({
+        role: "button",
+        name: `Button ${String(index)}`,
+      })),
+    };
+    const questions = { check: { kind: "yesno", prompt: "Shown?" } } as const;
+
+    const whole = await callDecider(decider, { snapshot }, questions);
+    const cut = await callDecider(decider, { snapshot }, questions, {
+      maxNodes: 4,
+    });
+
+    expect(whole.truncated).toBe(false);
+    expect(cut.truncated).toBe(true);
+    expect(cut.answers).toEqual({ check: { value: "no", confidence: 1 } });
+    expect(nodesSeen).toEqual([10, 3]);
+  });
+});
+
+describe("abstained answers", () => {
+  const yesno: Question = { kind: "yesno", prompt: "Shown?" };
+  const choice: Question = {
+    kind: "choice",
+    prompt: "Pick",
+    options: [{ id: "a", label: "A" }],
+  };
+  const score: Question = {
+    kind: "score",
+    prompt: "Rate",
+    levels: ["bad", "good"],
+  };
+
+  it("accepts any non-empty value when abstained", () => {
+    for (const question of [yesno, choice, score]) {
+      expect(() => {
+        validateAnswer(question, {
+          value: "cannot tell",
+          confidence: 0.3,
+          abstained: true,
+        });
+      }).not.toThrow();
+    }
+  });
+
+  it("still checks value type and confidence when abstained", () => {
+    const bad: unknown[] = [
+      { value: 42, confidence: 0.5, abstained: true },
+      { value: "", confidence: 0.5, abstained: true },
+      { value: "unsure", confidence: -0.1, abstained: true },
+      { value: "unsure", confidence: 1.1, abstained: true },
+      {
+        value: "unsure",
+        confidence: Number.POSITIVE_INFINITY,
+        abstained: true,
+      },
+      { value: "unsure", confidence: "0.5", abstained: true },
+    ];
+    for (const answer of bad) {
+      expect(() => {
+        validateAnswer(yesno, answer as Answer);
+      }).toThrow(QuestionError);
+    }
+  });
+
+  it("rejects an abstained flag that is not a boolean", () => {
+    const flags: unknown[] = ["true", 1, null, {}];
+    for (const abstained of flags) {
+      const answer = { value: "yes", confidence: 1, abstained } as Answer;
+      expect(() => {
+        validateAnswer(yesno, answer);
+      }).toThrow(QuestionError);
+    }
+  });
+
+  it("checks the value as usual when abstained is false", () => {
+    expect(() => {
+      validateAnswer(yesno, {
+        value: "maybe",
+        confidence: 1,
+        abstained: false,
+      });
+    }).toThrow(QuestionError);
+    expect(() => {
+      validateAnswer(yesno, { value: "yes", confidence: 1, abstained: false });
+    }).not.toThrow();
+  });
+});
+
+describe("assertAnswers own properties", () => {
+  const questions: Readonly<Record<string, Question>> = {
+    check: { kind: "yesno", prompt: "Shown?" },
+  };
+  const check: Answer = { value: "yes", confidence: 1 };
+
+  it("rejects an extra answer named after an Object.prototype member", () => {
+    for (const key of ["constructor", "toString", "hasOwnProperty"]) {
+      const answers = { check, [key]: { value: "yes", confidence: 1 } };
+      expect(() => {
+        assertAnswers(questions, answers);
+      }).toThrow(new QuestionError(`Unexpected answer "${key}"`));
+    }
+  });
+
+  it("rejects an extra own __proto__ answer", () => {
+    const answers = JSON.parse(
+      '{"check":{"value":"yes","confidence":1},"__proto__":{"value":"yes","confidence":1}}',
+    ) as Record<string, Answer>;
+    expect(Object.hasOwn(answers, "__proto__")).toBe(true);
+    expect(() => {
+      assertAnswers(questions, answers);
+    }).toThrow(new QuestionError('Unexpected answer "__proto__"'));
+  });
+
+  it("does not find a missing answer on Object.prototype", () => {
+    for (const key of ["constructor", "toString", "hasOwnProperty"]) {
+      const named: Readonly<Record<string, Question>> = {
+        [key]: { kind: "yesno", prompt: "Shown?" },
+      };
+      expect(() => {
+        assertAnswers(named, {});
+      }).toThrow(new QuestionError(`Missing answer for question "${key}"`));
+    }
+  });
+
+  it("does not find a missing __proto__ answer on the prototype", () => {
+    const named = JSON.parse(
+      '{"__proto__":{"kind":"yesno","prompt":"Shown?"}}',
+    ) as Record<string, Question>;
+    const inherited = Object.create({
+      __proto__: { value: "yes", confidence: 1 },
+    }) as Record<string, Answer>;
+    expect(() => {
+      assertAnswers(named, inherited);
+    }).toThrow(new QuestionError('Missing answer for question "__proto__"'));
+    expect(() => {
+      assertAnswers(named, {});
+    }).toThrow(new QuestionError('Missing answer for question "__proto__"'));
+  });
+
+  it("accepts own answers for every question", () => {
+    expect(() => {
+      assertAnswers(questions, { check });
+    }).not.toThrow();
   });
 });

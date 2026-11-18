@@ -83,8 +83,14 @@ export {
 } from "./prune.js";
 export type { PruneOptions, PrunedSnapshot } from "./prune.js";
 
+export { SNAPSHOT_RULES_VERSION, rulesFingerprint } from "./project.js";
+
 export { callDecider, prepareDecisionState } from "./prepare.js";
 export type { PreparedDecisionState } from "./prepare.js";
+export type { DecisionResult } from "./prepare.js";
+export type { GateContext } from "./verdict.js";
+
+export * from "./cache/index.js";
 
 export {
   CONFIG_FILENAMES,

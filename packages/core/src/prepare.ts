@@ -48,6 +48,16 @@ export function prepareDecisionState(
 }
 
 /**
+ * What `callDecider` returns. `truncated` is what pruning reported for the
+ * snapshot the decider actually saw. Pass it to `gateAnswer` as
+ * `{ truncated }`, so a "no" about a page that was cut cannot become `fail`.
+ */
+export interface DecisionResult {
+  readonly answers: Readonly<Record<string, Answer>>;
+  readonly truncated: boolean;
+}
+
+/**
  * The only supported way to invoke a decider from Jevy code.
  * The decider sees the prepared state, never the raw page.
  *
@@ -60,7 +70,7 @@ export async function callDecider(
   state: DecisionState,
   questions: Readonly<Record<string, Question>>,
   options?: PruneOptions,
-): Promise<Readonly<Record<string, Answer>>> {
+): Promise<DecisionResult> {
   validateQuestions(questions);
   const prepared = prepareDecisionState(state, {
     ...options,
@@ -68,7 +78,7 @@ export async function callDecider(
   });
   const answers = await decider.decide(toDecisionState(prepared), questions);
   assertAnswers(questions, answers);
-  return answers;
+  return { answers, truncated: prepared.truncated };
 }
 
 function toDecisionState(prepared: PreparedDecisionState): DecisionState {

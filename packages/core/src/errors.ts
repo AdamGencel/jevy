@@ -23,3 +23,9 @@ export class SnapshotError extends JevyError {}
  * Callers must treat this as fatal: do not hash, store, or send the input.
  */
 export class RedactionError extends JevyError {}
+
+/**
+ * The decision cache refused a key, record, spec path, or session setup.
+ * A cache that cannot prove a record is well formed must not replay it.
+ */
+export class CacheError extends JevyError {}
