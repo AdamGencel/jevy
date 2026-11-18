@@ -61,7 +61,7 @@ function visit(value: unknown, depth: number, walk: Walk): number {
   }
   if (depth > MAX_SNAPSHOT_DEPTH) {
     throw new SnapshotError(
-      `Accessibility snapshot is deeper than ${String(MAX_SNAPSHOT_DEPTH)} levels at ${where(walk)}`,
+      `Accessibility snapshot is deeper than ${String(MAX_SNAPSHOT_DEPTH)} levels: a node at depth ${String(depth)} is ${abbreviatedWhere(walk)}`,
     );
   }
   const known = walk.heights.get(value);
@@ -133,11 +133,22 @@ function where(walk: Walk): string {
   return walk.path.length === 0 ? "the root" : walk.path.join(".");
 }
 
+/**
+ * The path of a node too deep to spell out: hundreds of `children[0]`
+ * segments would bury the problem, so only both ends are kept.
+ */
+function abbreviatedWhere(walk: Walk): string {
+  const { path } = walk;
+  if (path.length <= 6) return `at ${where(walk)}`;
+  const skipped = path.length - 6;
+  return `at ${path.slice(0, 3).join(".")}…(${String(skipped)} more levels)…${path.slice(-3).join(".")}`;
+}
+
 function describe(value: unknown): string {
-  if (value === null) return "null";
+  if (value === null || value === undefined) return String(value);
   if (Array.isArray(value)) return "an array";
   if (typeof value === "number" && !Number.isFinite(value)) {
     return String(value);
   }
-  return `a ${typeof value}`;
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
 }

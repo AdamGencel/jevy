@@ -115,6 +115,27 @@ describe("snapshot validation", () => {
     });
   }
 
+  it("describes the offending value in plain English", () => {
+    expect(
+      messageOf(() => {
+        validateSnapshot(malformed({ role: "main", children: { role: "x" } }));
+      }),
+    ).toContain("children that are an object, not an array");
+    expect(
+      messageOf(() => {
+        validateSnapshot(malformed({ role: "main", value: {} }));
+      }),
+    ).toContain("value that is an object");
+    // A hole in a sparse array reads as undefined.
+    const holed: unknown[] = [];
+    holed[1] = { role: "x" };
+    expect(
+      messageOf(() => {
+        validateSnapshot(malformed({ role: "main", children: holed }));
+      }),
+    ).toMatch(/children\[0\] is undefined, not an object/);
+  });
+
   it("treats an explicitly undefined field as absent", () => {
     expect(() => {
       validateSnapshot({ role: "button", name: undefined });
@@ -190,6 +211,16 @@ describe("shared nodes, cycles and depth", () => {
       expect(() => entry(deep)).toThrow(SnapshotError);
       expect(performance.now() - started).toBeLessThan(500);
     }
+  });
+
+  it("keeps the too-deep message short enough to read", () => {
+    // Spelling out 513 path segments would bury the problem in ~7 KB.
+    const message = messageOf(() => {
+      validateSnapshot(chain(100_000));
+    });
+    expect(message).toMatch(/deeper than 512 levels/);
+    expect(message).toMatch(/depth 513/);
+    expect(message.length).toBeLessThan(300);
   });
 
   it("validates heavily shared subtrees without walking every path", () => {
