@@ -4,7 +4,11 @@ import { hashSnapshot } from "./hash.js";
 import { normaliseSnapshot } from "./normalise.js";
 import { redactSnapshot } from "./redact.js";
 import type { AccessibilityNode } from "./snapshot.js";
-import { MAX_SNAPSHOT_DEPTH, validateSnapshot } from "./validate.js";
+import {
+  MAX_SNAPSHOT_DEPTH,
+  MAX_SNAPSHOT_NODES,
+  validateSnapshot,
+} from "./validate.js";
 
 /** Lets a test build shapes the type system rightly forbids. */
 function malformed(value: unknown): AccessibilityNode {
@@ -224,10 +228,11 @@ describe("shared nodes, cycles and depth", () => {
   });
 
   it("validates heavily shared subtrees without walking every path", () => {
-    // 40 levels where each level references the next twice: 2^40 paths, but
-    // only 41 distinct objects. Validation must not walk every path.
+    // 16 levels where each level references the next twice: 131,071 nodes
+    // once expanded (under MAX_SNAPSHOT_NODES), but only 17 distinct objects.
+    // Validation must not walk every path.
     let node: AccessibilityNode = { role: "button", name: "leaf" };
-    for (let level = 0; level < 40; level += 1) {
+    for (let level = 0; level < 16; level += 1) {
       node = { role: "group", children: [node, node] };
     }
     const started = performance.now();
@@ -235,6 +240,37 @@ describe("shared nodes, cycles and depth", () => {
       validateSnapshot(node);
     }).not.toThrow();
     expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("rejects a tree that reuses nodes into more than MAX_SNAPSHOT_NODES", () => {
+    // 40 objects, each holding the next one twice: 2^40 nodes once expanded.
+    // Redaction and normalisation would walk every one of them.
+    let node: AccessibilityNode = { role: "text", name: "leaf" };
+    for (let level = 0; level < 40; level += 1) {
+      node = { role: "group", children: [node, node] };
+    }
+    const started = performance.now();
+    expect(() => hashSnapshot(node)).toThrow(SnapshotError);
+    expect(() => hashSnapshot(node)).toThrow(/more than .* nodes/);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("counts a reused node once for each place it appears", () => {
+    const leaf: AccessibilityNode = { role: "text", name: "x" };
+    const atLimit: AccessibilityNode = {
+      role: "list",
+      children: Array.from({ length: MAX_SNAPSHOT_NODES - 1 }, () => leaf),
+    };
+    expect(() => {
+      validateSnapshot(atLimit);
+    }).not.toThrow();
+    const overLimit: AccessibilityNode = {
+      role: "list",
+      children: Array.from({ length: MAX_SNAPSHOT_NODES }, () => leaf),
+    };
+    expect(() => {
+      validateSnapshot(overLimit);
+    }).toThrow(SnapshotError);
   });
 
   it("finds a too-deep path through a subtree it has already seen", () => {

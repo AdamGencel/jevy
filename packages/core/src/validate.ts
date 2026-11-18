@@ -10,6 +10,14 @@ import type { AccessibilityNode } from "./snapshot.js";
  */
 export const MAX_SNAPSHOT_DEPTH = 512;
 
+/**
+ * Most nodes accepted, counting a reused node once for each place it
+ * appears. Validation is linear in distinct objects, but redaction and
+ * normalisation walk the expanded tree, so a few dozen objects that each
+ * hold the next one twice would otherwise run for ever.
+ */
+export const MAX_SNAPSHOT_NODES = 250_000;
+
 /** Optional fields that must be strings when present. */
 const STRING_FIELDS = [
   "name",
@@ -36,7 +44,12 @@ const STRING_FIELDS = [
 export function validateSnapshot(
   snapshot: unknown,
 ): asserts snapshot is AccessibilityNode {
-  const walk: Walk = { ancestors: new Set(), heights: new Map(), path: [] };
+  const walk: Walk = {
+    ancestors: new Set(),
+    heights: new Map(),
+    sizes: new Map(),
+    path: [],
+  };
   visit(snapshot, 0, walk);
 }
 
@@ -45,6 +58,8 @@ interface Walk {
   readonly ancestors: Set<object>;
   /** Height of each subtree already checked, in edges. */
   readonly heights: Map<object, number>;
+  /** Node count of each subtree already checked, reused nodes counted again. */
+  readonly sizes: Map<object, number>;
   /** Path segments from the root, such as `children[2]`. */
   readonly path: string[];
 }
@@ -72,17 +87,26 @@ function visit(value: unknown, depth: number, walk: Walk): number {
   checkFields(value, walk);
   const children = value["children"];
   let height = 0;
+  let size = 1;
   if (Array.isArray(children)) {
     walk.ancestors.add(value);
     for (let index = 0; index < children.length; index += 1) {
       walk.path.push(`children[${String(index)}]`);
       const child: unknown = children[index];
       height = Math.max(height, 1 + visit(child, depth + 1, walk));
+      // `visit` returned, so the child is an object it has sized.
+      size += walk.sizes.get(child as object) ?? 1;
       walk.path.pop();
     }
     walk.ancestors.delete(value);
   }
+  if (size > MAX_SNAPSHOT_NODES) {
+    throw new SnapshotError(
+      `Accessibility snapshot has more than ${String(MAX_SNAPSHOT_NODES)} nodes once reused nodes are counted in every place they appear: the subtree at ${abbreviatedWhere(walk)}`,
+    );
+  }
   walk.heights.set(value, height);
+  walk.sizes.set(value, size);
   return height;
 }
 

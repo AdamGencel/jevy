@@ -859,7 +859,26 @@ describe("createDecisionSession: redaction before write", () => {
   it("refuses to store an answer that redaction would change", async () => {
     const store = new MemoryDecisionStore();
     const query = session(store, "record", {
-      decider: decider({ value: "ACCT-1", confidence: 0.9 }),
+      decider: decider({ value: "yes", confidence: 0.9 }),
+      snapshot: { redact: [/yes/] },
+    });
+    await expect(
+      query.decide({
+        spec: SPEC,
+        step: "s1",
+        question: { kind: "yesno", prompt: "Is the account selected?" },
+        state: state(),
+      }),
+    ).rejects.toThrow(CacheError);
+    await query.confirm();
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("refuses an option id that looks like a secret before the decider is called", async () => {
+    const store = new MemoryDecisionStore();
+    const used = decider({ value: "ACCT-1", confidence: 0.9 });
+    const query = session(store, "record", {
+      decider: used,
       snapshot: { redact: [/ACCT-\d+/] },
     });
     await expect(
@@ -876,7 +895,8 @@ describe("createDecisionSession: redaction before write", () => {
         },
         state: state(),
       }),
-    ).rejects.toThrow(CacheError);
+    ).rejects.toThrow(RedactionError);
+    expect(used.calls).toBe(0);
     await query.confirm();
     expect(await store.list()).toEqual([]);
   });

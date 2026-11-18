@@ -1,19 +1,12 @@
-import { REDACTED } from "@jevyjs/core";
+import { REDACTED, SECRET_AUTOCOMPLETE_TOKENS } from "@jevyjs/core";
 import type { AccessibilityNode } from "@jevyjs/core";
 
 /**
- * Autocomplete tokens that mark a field as secret. This is the same list as
- * core's private `SECRET_AUTOCOMPLETE` in redact.ts; a test checks that core
- * treats every one of them as secret. It is copied because core does not
- * export it.
+ * Autocomplete tokens that mark a field as secret. This is core's own list,
+ * re-exported, so a token added to core reaches the bridge with no copy to
+ * keep in step.
  */
-export const SECRET_AUTOCOMPLETE_TOKENS: readonly string[] = [
-  "current-password",
-  "new-password",
-  "one-time-code",
-  "cc-number",
-  "cc-csc",
-];
+export { SECRET_AUTOCOMPLETE_TOKENS };
 
 /**
  * True when an `autocomplete` attribute holds a secret token. The attribute is

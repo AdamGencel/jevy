@@ -6,11 +6,12 @@ import type {
 } from "./decider.js";
 import { assertAnswers, validateQuestions } from "./decider.js";
 import type { Decider } from "./decider.js";
-import { SnapshotError } from "./errors.js";
-import { isRecord } from "./guards.js";
+import { RedactionError, SnapshotError } from "./errors.js";
+import { collapseWhitespace, isRecord } from "./guards.js";
 import { pruneSnapshot } from "./prune.js";
 import type { PruneOptions } from "./prune.js";
 import { redactText, redactWallet } from "./redact.js";
+import type { RedactRule } from "./redact.js";
 
 export interface PreparedDecisionState {
   readonly snapshot: DecisionState["snapshot"];
@@ -64,6 +65,10 @@ export interface DecisionResult {
  * The token budget follows `decider.id`, so a Kev decider gets Kev's budget
  * without the caller passing `deciderId`. A `deciderId` in `options` is
  * ignored here; an explicit `maxTokens` still wins.
+ *
+ * The questions are redacted too: a prompt is written by a person or an
+ * agent and can quote an email or a key as easily as the page can. Answers
+ * are still checked against the questions as the caller wrote them.
  */
 export async function callDecider(
   decider: Decider,
@@ -76,9 +81,85 @@ export async function callDecider(
     ...options,
     deciderId: decider.id,
   });
-  const answers = await decider.decide(toDecisionState(prepared), questions);
+  const answers = await decider.decide(
+    toDecisionState(prepared),
+    redactQuestions(questions, options?.redact ?? []),
+  );
   assertAnswers(questions, answers);
   return { answers, truncated: prepared.truncated };
+}
+
+function redactQuestions(
+  questions: Readonly<Record<string, Question>>,
+  rules: readonly RedactRule[],
+): Readonly<Record<string, Question>> {
+  const redacted: Record<string, Question> = {};
+  for (const name of Object.keys(questions)) {
+    const question = questions[name];
+    if (question === undefined) continue;
+    // A null-prototype copy would lose nothing, but `defineProperty` keeps a
+    // question named `__proto__` an own key on a plain object.
+    Object.defineProperty(redacted, name, {
+      value: redactQuestion(question, rules),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return redacted;
+}
+
+/**
+ * Prompts, criteria and option labels are redacted. Option ids and score
+ * levels are the values the decider answers with, so they cannot be rewritten
+ * without breaking the answer check; one that redaction would change is
+ * refused instead, before any call is made.
+ */
+function redactQuestion(
+  question: Question,
+  rules: readonly RedactRule[],
+): Question {
+  const prompt = redactText(question.prompt, rules);
+  switch (question.kind) {
+    case "yesno":
+      return question.criteria === undefined
+        ? { kind: "yesno", prompt }
+        : {
+            kind: "yesno",
+            prompt,
+            criteria: redactText(question.criteria, rules),
+          };
+    case "choice":
+      return {
+        kind: "choice",
+        prompt,
+        options: question.options.map((option) => ({
+          id: unchangedByRedaction(option.id, rules, "A choice option id"),
+          label: redactText(option.label, rules),
+        })),
+      };
+    case "score":
+      return {
+        kind: "score",
+        prompt,
+        levels: question.levels.map((level) =>
+          unchangedByRedaction(level, rules, "A score level"),
+        ),
+      };
+  }
+}
+
+function unchangedByRedaction(
+  value: string,
+  rules: readonly RedactRule[],
+  what: string,
+): string {
+  if (redactText(value, rules) !== collapseWhitespace(value)) {
+    throw new RedactionError(
+      `${what} looks like a secret or personal data. It is a value the decider answers with, so it cannot be redacted; use a neutral id or level and put the detail in a label or the prompt.`,
+    );
+  }
+  return value;
 }
 
 function toDecisionState(prepared: PreparedDecisionState): DecisionState {

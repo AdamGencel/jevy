@@ -9,7 +9,7 @@ import {
   type Decider,
   type Question,
 } from "./decider.js";
-import { QuestionError, SnapshotError } from "./errors.js";
+import { QuestionError, RedactionError, SnapshotError } from "./errors.js";
 import { hashSnapshot } from "./hash.js";
 import { parseConfig } from "./config.js";
 import type { DecisionState } from "./decider.js";
@@ -154,6 +154,78 @@ describe("decider contract", () => {
     expect(kev).toBeLessThanOrEqual(KEV_SNAPSHOT_TOKEN_BUDGET);
     expect(jev).toBeGreaterThan(KEV_SNAPSHOT_TOKEN_BUDGET);
     expect(jev).toBeLessThanOrEqual(DEFAULT_SNAPSHOT_TOKEN_BUDGET);
+  });
+
+  it("redacts the question before the decider sees it", async () => {
+    const seen: Question[] = [];
+    const decider: Decider = {
+      id: "fake",
+      model: "fake-1",
+      decide(_state, questions) {
+        seen.push(...Object.values(questions));
+        return Promise.resolve({
+          signedIn: { value: "yes", confidence: 0.9 },
+          pick: { value: "a", confidence: 0.9 },
+        });
+      },
+    };
+    const result = await callDecider(
+      decider,
+      { snapshot: { role: "button", name: "Pay" } },
+      {
+        signedIn: {
+          kind: "yesno",
+          prompt: "Is ada@example.com signed in?",
+          criteria: "The header shows ada@example.com",
+        },
+        pick: {
+          kind: "choice",
+          prompt: "Which row belongs to ada@example.com?",
+          options: [
+            { id: "a", label: "Row for ada@example.com" },
+            { id: "b", label: "Row for someone else" },
+          ],
+        },
+      },
+    );
+    const encoded = JSON.stringify(seen);
+    expect(encoded).not.toContain("ada@example.com");
+    expect(encoded).toContain("[REDACTED]");
+    // Ids are the answer vocabulary and reach the decider unchanged.
+    expect(encoded).toContain('"id":"a"');
+    expect(result.answers["pick"]?.value).toBe("a");
+  });
+
+  it("refuses a question whose answer vocabulary holds a secret", async () => {
+    let called = false;
+    const decider: Decider = {
+      id: "fake",
+      model: "fake-1",
+      decide() {
+        called = true;
+        return Promise.resolve({});
+      },
+    };
+    const state = { snapshot: { role: "button", name: "Pay" } };
+    await expect(
+      callDecider(decider, state, {
+        pick: {
+          kind: "choice",
+          prompt: "Pick",
+          options: [{ id: "ada@example.com", label: "Ada" }],
+        },
+      }),
+    ).rejects.toBeInstanceOf(RedactionError);
+    await expect(
+      callDecider(decider, state, {
+        rate: {
+          kind: "score",
+          prompt: "Rate",
+          levels: ["bad", "ok for ada@example.com"],
+        },
+      }),
+    ).rejects.toBeInstanceOf(RedactionError);
+    expect(called).toBe(false);
   });
 
   it("rejects a screenshot on the decision state", async () => {

@@ -15,13 +15,20 @@ const SECRET_FIELD_NAME =
 
 const SECRET_FIELD_ROLES = new Set(["textbox", "searchbox"]);
 
-const SECRET_AUTOCOMPLETE = new Set([
+/**
+ * `autocomplete` tokens that mark a field as secret whatever its label says.
+ * Exported so a snapshot source (the Playwright bridge) blanks the same
+ * fields core would, instead of keeping its own copy of the list.
+ */
+export const SECRET_AUTOCOMPLETE_TOKENS: readonly string[] = [
   "current-password",
   "new-password",
   "one-time-code",
   "cc-number",
   "cc-csc",
-]);
+];
+
+const SECRET_AUTOCOMPLETE = new Set(SECRET_AUTOCOMPLETE_TOKENS);
 
 /**
  * Wallet field names are split into words (`privateKey` → private, key).
