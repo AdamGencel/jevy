@@ -259,7 +259,7 @@ Text from neighbouring inline elements is merged and whitespace-collapsed (`- te
 
 ### Quoting
 
-Playwright builds the key as `role + " " + JSON.stringify(name) + attributes`, then single-quotes the whole key for YAML when it needs it (`'` doubled). A name that starts and ends with `/` is printed unquoted, so it reads like a regular expression but is literal text. Values are YAML double-quoted with `\"`, `\\`, `\n`, `\t`, `\xNN` escapes when they would otherwise be read as something else (numbers, `yes`, `true`, `null`, a leading `-`, `#`, `: `).
+Playwright builds the key as `role + " " + JSON.stringify(name) + attributes`, then single-quotes the whole key for YAML when it needs it (`'` doubled). A name that starts and ends with `/` is printed unquoted, so it reads like a regular expression but is literal text. A lone `/` (a breadcrumb separator, `<button>/</button>`) counts: it prints as `- button /`. Values are YAML double-quoted with `\"`, `\\`, `\n`, `\t`, `\xNN` escapes when they would otherwise be read as something else (numbers, `yes`, `true`, `null`, a leading `-`, `#`, `: `).
 
 ```html
 <button>Say "hi"</button> <button>it's</button> <button>a: b</button> <button>[x] box</button>

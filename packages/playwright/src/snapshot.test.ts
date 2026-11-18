@@ -366,6 +366,19 @@ describe("snapshotAccessibility: content", () => {
       ],
     });
   });
+
+  it("reads names that Playwright prints unquoted between slashes", async () => {
+    await page.setContent(
+      `<button>/</button><button>/api/</button>`,
+    );
+    expect(await snapshotAccessibility(page)).toEqual({
+      role: "document",
+      children: [
+        { role: "button", name: "/" },
+        { role: "button", name: "/api/" },
+      ],
+    });
+  });
 });
 
 describe("snapshotAccessibility with core", () => {

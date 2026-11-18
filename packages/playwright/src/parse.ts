@@ -199,8 +199,8 @@ const ATTRIBUTE = /^ \[([a-z-]+)(?:=([^\]\s]*))?\]/;
 /**
  * Read `role "name" [attr] [attr=value]`. The name is a JSON string, or a
  * literal `/…/` when the name itself starts and ends with a slash, which
- * Playwright prints unquoted. Attributes never contain a slash, so the last
- * slash in the key ends such a name.
+ * Playwright prints unquoted (a lone `/` included). Attributes never contain
+ * a slash, so the last slash in the key ends such a name.
  */
 function parseKey(key: string, context: Context, at: number): ParsedKey {
   const roleMatch = ROLE.exec(key);
@@ -214,8 +214,8 @@ function parseKey(key: string, context: Context, at: number): ParsedKey {
     node.name = parseJsonString(rest.slice(1, end + 1), context, at);
     rest = rest.slice(end + 1);
   } else if (rest.startsWith(" /")) {
+    // The opening slash can also be the closing one: a name of just "/".
     const end = rest.lastIndexOf("/");
-    if (end <= 1) fail(context, at, "unterminated name");
     node.name = rest.slice(1, end + 1);
     rest = rest.slice(end + 1);
   }

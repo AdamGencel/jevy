@@ -338,6 +338,22 @@ describe("parseAriaSnapshot: quoting as Playwright emits it", () => {
     });
   });
 
+  it("reads a name that is a single slash", () => {
+    // Playwright 1.63 prints any name that starts and ends with "/" unquoted,
+    // and a lone "/" (a breadcrumb separator) does both.
+    expect(only("- button /")).toEqual({ role: "button", name: "/" });
+    expect(only("- heading / [level=2]")).toEqual({
+      role: "heading",
+      name: "/",
+      level: 2,
+    });
+    expect(only("- link /: hi")).toEqual({
+      role: "link",
+      name: "/",
+      children: [{ role: "text", name: "hi" }],
+    });
+  });
+
   it.each([
     ['- paragraph: "value: colon text"', "value: colon text"],
     ['- paragraph: "- leading dash text"', "- leading dash text"],
