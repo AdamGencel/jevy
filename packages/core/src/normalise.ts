@@ -64,6 +64,28 @@ export function normaliseText(
 }
 
 /**
+ * Every placeholder normalisation can write under `options`, with what
+ * writes it: a built-in id, or the index into `options.replace`. Normalised
+ * text is checked for secrets again, so config loading uses this to reject a
+ * redact rule that would match one.
+ */
+export function normalisePlaceholders(options: NormaliseOptions): readonly {
+  readonly placeholder: string;
+  readonly source: NormaliseBuiltin | number;
+}[] {
+  const disabled = new Set(options.disable);
+  return [
+    ...BUILTIN_PATTERNS.filter((builtin) => !disabled.has(builtin.id)).map(
+      (builtin) => ({ placeholder: builtin.placeholder, source: builtin.id }),
+    ),
+    ...options.replace.map((rule, index) => ({
+      placeholder: rule.placeholder,
+      source: index,
+    })),
+  ];
+}
+
+/**
  * JSON value used as the hash input. Key order is fixed. Empty children are
  * omitted, so `children: []` and a missing `children` hash the same.
  */

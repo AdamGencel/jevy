@@ -4,8 +4,18 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import type { LlmAdapter } from "./decider.js";
 import { ConfigError } from "./errors.js";
-import { canMatchEmpty, isRecord, withoutStateFlags } from "./guards.js";
-import { findRedactionConflict, redactText } from "./redact.js";
+import {
+  canMatchEmpty,
+  collapseWhitespace,
+  isRecord,
+  withoutStateFlags,
+} from "./guards.js";
+import { normalisePlaceholders } from "./normalise.js";
+import {
+  findRedactionConflict,
+  redactionCulprit,
+  redactText,
+} from "./redact.js";
 import type { RedactionConflict, RedactRule } from "./redact.js";
 import {
   DEFAULT_NORMALISE,
@@ -257,6 +267,7 @@ export function parseConfig(
   const ci = readCi(input["ci"]);
   const redact = readRedactRules(input["redact"]);
   const normalise = readNormalise(input["normalise"]);
+  assertPlaceholdersSettle(redact, normalise);
   const web3Result = readWeb3(input["web3"]);
 
   const resolved: ResolvedJevyConfig = {
@@ -678,6 +689,35 @@ function readRedactRules(value: unknown): readonly RedactRule[] {
   const conflict = findRedactionConflict(rules);
   if (conflict !== undefined) throw new ConfigError(conflictMessage(conflict));
   return rules;
+}
+
+/**
+ * Reject a redact rule that matches a placeholder normalisation writes, such
+ * as `[time]`. The normalised tree is checked for secrets again, so such a
+ * rule would fail every snapshot that shows a timestamp, an id or whatever
+ * the placeholder stands for.
+ */
+function assertPlaceholdersSettle(
+  rules: readonly RedactRule[],
+  normalise: NormaliseOptions,
+): void {
+  for (const { placeholder, source } of normalisePlaceholders(normalise)) {
+    // Normalisation collapses whitespace after it replaces.
+    const token = collapseWhitespace(placeholder);
+    const culprit = redactionCulprit(token, rules);
+    if (culprit === undefined) continue;
+    const who =
+      typeof culprit === "number"
+        ? `redact[${String(culprit)}]`
+        : `The built-in "${culprit}" redaction pattern`;
+    const writer =
+      typeof source === "number"
+        ? `the placeholder set by normalise.replace[${String(source)}]`
+        : `the placeholder the built-in "${source}" normalisation writes (turn it off with normalise.disable)`;
+    throw new ConfigError(
+      `${who} matches ${JSON.stringify(token)}, ${writer}, so every snapshot that contains it would fail with RedactionError`,
+    );
+  }
 }
 
 function patternOf(rule: RedactRule): RegExp | undefined {

@@ -524,10 +524,23 @@ export function findRedactionConflict(
     }
   });
   for (const { token, source } of tokens) {
-    if (replaceSecrets(token, rules) === token) continue;
-    return { token, source, culprit: firstChange(token, rules) };
+    const culprit = redactionCulprit(token, rules);
+    if (culprit !== undefined) return { token, source, culprit };
   }
   return undefined;
+}
+
+/**
+ * What would redact `token` (a rule index or a built-in pattern name), or
+ * undefined when redaction leaves it as it is. For text written into the tree
+ * after redaction, such as a normalisation placeholder, that is checked again.
+ */
+export function redactionCulprit(
+  token: string,
+  rules: readonly RedactRule[],
+): number | string | undefined {
+  if (replaceSecrets(token, rules) === token) return undefined;
+  return firstChange(token, rules);
 }
 
 function replacementOf(rule: RedactRule): string | undefined {

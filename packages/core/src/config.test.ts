@@ -339,6 +339,33 @@ describe("rules that can never settle", () => {
     ).toMatch(/normalise\.replace\[1\]\.pattern matches its own placeholder/);
   });
 
+  it("rejects a redact rule that matches a built-in normalise placeholder", () => {
+    // Normalised text is checked for secrets again, so a rule matching
+    // "[time]" would fail every page that shows a timestamp.
+    const message = configMessage({ redact: [/time/] });
+    expect(message).toMatch(/redact\[0\]/);
+    expect(message).toContain('"[time]"');
+    expect(message).toMatch(/timestamp/);
+    // Once the built-in is disabled its placeholder never appears.
+    expect(
+      parseConfig({
+        redact: [/time/],
+        normalise: { disable: ["timestamp", "relative-time"] },
+      }).redact,
+    ).toHaveLength(1);
+  });
+
+  it("rejects a redact rule that matches a normalise.replace placeholder", () => {
+    expect(
+      configMessage({
+        redact: [/ORDER-\d+/, /order/],
+        normalise: {
+          replace: [{ pattern: /ORD-\d+/, placeholder: "[order]" }],
+        },
+      }),
+    ).toMatch(/redact\[1\].*"\[order\]".*normalise\.replace\[0\]/);
+  });
+
   it("accepts a normalise pattern whose placeholder it does not match", () => {
     const sticky = /ORD-\d+/y;
     sticky.lastIndex = 2;
