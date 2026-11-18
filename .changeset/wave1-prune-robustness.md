@@ -1,0 +1,5 @@
+---
+"@jevyjs/core": patch
+---
+
+Make snapshot processing robust. `validateSnapshot` checks a snapshot at the start of `redactSnapshot` and `normaliseSnapshot`, so a null child, a missing role, a bad `value` or a non-string text field throws `SnapshotError` with the path to the node, instead of a `TypeError` from deep inside. A node object used in two places is two nodes; only a node that is its own ancestor is a cycle, and a tree deeper than `MAX_SNAPSHOT_DEPTH` (512) is rejected. Pruning removes unprotected nodes before alerts, dialogs, status messages, headings and the nodes around them (`DEFAULT_KEEP_ROLES`, replaced by `keepRoles`; `[]` gives the previous order). A pruned snapshot always fits its budget: the root's text fields are shortened in turn, and `SnapshotError` is thrown when even the bare root does not fit. Prune budgets are validated. `parseConfig` rejects redact and normalise patterns that can match an empty string, a redact rule set that would redact `[REDACTED]` or a rule's own replacement again, and a normalise pattern that matches its own placeholder. Snapshot hashes are unchanged.

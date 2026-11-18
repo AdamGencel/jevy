@@ -229,6 +229,127 @@ function raw(value: unknown): unknown {
   return value;
 }
 
+describe("rules that can never settle", () => {
+  function configMessage(raw: unknown): string {
+    try {
+      parseConfig(raw);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      return (error as Error).message;
+    }
+    throw new Error("expected a ConfigError");
+  }
+
+  it("rejects a redact pattern that matches the empty string", () => {
+    expect(configMessage({ redact: [/ORDER-\d+/, /x*/] })).toMatch(
+      /redact\[1\].*empty string/,
+    );
+    expect(configMessage({ redact: [{ pattern: /a?/ }] })).toMatch(
+      /redact\[0\].*empty string/,
+    );
+  });
+
+  it("rejects a redact pattern that can match an empty span inside text", () => {
+    expect(configMessage({ redact: [/\b/] })).toMatch(
+      /redact\[0\].*empty string/,
+    );
+    expect(configMessage({ redact: [{ pattern: /(?=x)/ }] })).toMatch(
+      /redact\[0\].*empty string/,
+    );
+  });
+
+  it("rejects a rule that matches inside the [REDACTED] token", () => {
+    const message = configMessage({ redact: [/RED/] });
+    expect(message).toMatch(/redact\[0\]/);
+    expect(message).toContain('"[REDACTED]"');
+    expect(message).toMatch(/never settle/);
+  });
+
+  it("rejects a pattern rule that matches its own replacement", () => {
+    expect(
+      configMessage({
+        redact: [{ pattern: /code-\d+|hidden/, replacement: "[hidden]" }],
+      }),
+    ).toMatch(/redact\[0\] matches its own replacement "\[hidden\]"/);
+    // A replacement the pattern maps to itself is a fixed point, and settles.
+    expect(
+      parseConfig({
+        redact: [{ pattern: /code-\w+/, replacement: "code-hidden" }],
+      }).redact,
+    ).toHaveLength(1);
+  });
+
+  it("rejects a rule that matches another rule's replacement", () => {
+    expect(
+      configMessage({
+        redact: [{ pattern: /ORD-\d+/, replacement: "ORD" }, /ORD/],
+      }),
+    ).toMatch(/redact\[1\] matches "ORD", the replacement set by redact\[0\]/);
+    expect(
+      configMessage({
+        redact: [{ role: "textbox", replacement: "hidden" }, /hidden/],
+      }),
+    ).toMatch(/redact\[1\].*"hidden".*redact\[0\]/);
+  });
+
+  it("ignores g and y flags and their lastIndex when it checks", () => {
+    const global = /RED/g;
+    global.lastIndex = 7;
+    expect(configMessage({ redact: [global] })).toMatch(/redact\[0\]/);
+    expect(global.lastIndex).toBe(7);
+    expect(configMessage({ redact: [/RED/y] })).toMatch(/redact\[0\]/);
+    const empty = /x*/g;
+    empty.lastIndex = 3;
+    expect(configMessage({ redact: [empty] })).toMatch(/empty string/);
+
+    const fine = /ORDER-\d+/gy;
+    fine.lastIndex = 4;
+    expect(parseConfig({ redact: [fine] }).redact).toEqual([fine]);
+    expect(fine.lastIndex).toBe(4);
+  });
+
+  it("accepts rules that settle", () => {
+    const rules = [
+      /ORDER-\d+/,
+      { pattern: /tok_\w+/, replacement: "[token]" },
+      { role: "textbox", name: "Backup code", replacement: "[code]" },
+      { role: "searchbox" },
+    ];
+    expect(parseConfig({ redact: rules }).redact).toHaveLength(4);
+  });
+
+  it("rejects a normalise pattern that matches the empty string", () => {
+    expect(
+      configMessage({
+        normalise: { replace: [{ pattern: /x*/, placeholder: "[x]" }] },
+      }),
+    ).toMatch(/normalise\.replace\[0\]\.pattern.*empty string/);
+  });
+
+  it("rejects a normalise pattern that matches its own placeholder", () => {
+    expect(
+      configMessage({
+        normalise: {
+          replace: [
+            { pattern: /ORD-\d+/, placeholder: "[order]" },
+            { pattern: /\[\w+\]/g, placeholder: "[ref]" },
+          ],
+        },
+      }),
+    ).toMatch(/normalise\.replace\[1\]\.pattern matches its own placeholder/);
+  });
+
+  it("accepts a normalise pattern whose placeholder it does not match", () => {
+    const sticky = /ORD-\d+/y;
+    sticky.lastIndex = 2;
+    const config = parseConfig({
+      normalise: { replace: [{ pattern: sticky, placeholder: "[order]" }] },
+    });
+    expect(config.normalise.replace).toHaveLength(1);
+    expect(sticky.lastIndex).toBe(2);
+  });
+});
+
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "jevy-config-"));
   directories.push(dir);

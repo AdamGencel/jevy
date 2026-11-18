@@ -488,6 +488,80 @@ function assertStable(output: string, rules: readonly RedactRule[]): void {
   }
 }
 
+/**
+ * Text redaction would change again, and what changes it. `source` is the
+ * index of the rule whose replacement `token` is, or undefined for
+ * `[REDACTED]`. `culprit` is the index of the rule that matches it, or the
+ * name of a built-in pattern.
+ */
+export interface RedactionConflict {
+  readonly token: string;
+  readonly source: number | undefined;
+  readonly culprit: number | string;
+}
+
+/**
+ * Find a replacement that `rules` would redact again. Redaction checks that a
+ * second pass changes nothing, so such a rule set makes every redaction that
+ * leaves the token behind throw `RedactionError`, page after page. Checking
+ * the tokens up front turns that into one clear config error. The token is
+ * checked as written and with its whitespace collapsed, since normalisation
+ * collapses it before the tree is checked again.
+ */
+export function findRedactionConflict(
+  rules: readonly RedactRule[],
+): RedactionConflict | undefined {
+  const tokens: { token: string; source: number | undefined }[] = [
+    { token: REDACTED, source: undefined },
+  ];
+  rules.forEach((rule, index) => {
+    const replacement = replacementOf(rule);
+    if (replacement === undefined) return;
+    tokens.push({ token: replacement, source: index });
+    const collapsed = collapseWhitespace(replacement);
+    if (collapsed !== replacement) {
+      tokens.push({ token: collapsed, source: index });
+    }
+  });
+  for (const { token, source } of tokens) {
+    if (replaceSecrets(token, rules) === token) continue;
+    return { token, source, culprit: firstChange(token, rules) };
+  }
+  return undefined;
+}
+
+function replacementOf(rule: RedactRule): string | undefined {
+  if (rule instanceof RegExp) return undefined;
+  return rule.replacement;
+}
+
+/**
+ * The first step of `replaceSecrets` that changes `input`. Every earlier step
+ * left the text as it was, so this step saw `input` itself.
+ */
+function firstChange(
+  input: string,
+  rules: readonly RedactRule[],
+): number | string {
+  if (findSeedSpans(input).length > 0) return "seed-phrase";
+  for (const pattern of TEXT_PATTERNS) {
+    if (replaceGlobal(input, pattern.pattern, REDACTED) !== input) {
+      return pattern.name;
+    }
+  }
+  for (const [index, rule] of rules.entries()) {
+    if (rule instanceof RegExp) {
+      if (replaceGlobal(input, rule, REDACTED) !== input) return index;
+    } else if (isPatternRule(rule)) {
+      const replacement = rule.replacement ?? REDACTED;
+      if (replaceGlobal(input, rule.pattern, replacement) !== input) {
+        return index;
+      }
+    }
+  }
+  return "the redact rules";
+}
+
 interface WordToken {
   readonly word: string;
   readonly start: number;

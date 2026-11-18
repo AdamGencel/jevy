@@ -122,3 +122,8 @@ export type {
   ResolvedWeb3,
   Web3Config,
 } from "./config.js";
+
+export { MAX_SNAPSHOT_DEPTH, validateSnapshot } from "./validate.js";
+export { DEFAULT_KEEP_ROLES } from "./prune.js";
+export { findRedactionConflict } from "./redact.js";
+export type { RedactionConflict } from "./redact.js";

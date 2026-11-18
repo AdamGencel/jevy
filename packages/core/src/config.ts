@@ -4,9 +4,9 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import type { LlmAdapter } from "./decider.js";
 import { ConfigError } from "./errors.js";
-import { isRecord } from "./guards.js";
-import { redactText } from "./redact.js";
-import type { RedactRule } from "./redact.js";
+import { canMatchEmpty, isRecord, withoutStateFlags } from "./guards.js";
+import { findRedactionConflict, redactText } from "./redact.js";
+import type { RedactionConflict, RedactRule } from "./redact.js";
 import {
   DEFAULT_NORMALISE,
   resolveNormalise,
@@ -655,12 +655,48 @@ function readNeedsReview(
   };
 }
 
+/**
+ * Read `redact`, and reject a rule set that could never settle. Redaction
+ * fails closed when a second pass still changes the text, so a pattern that
+ * matches an empty span, or matches `[REDACTED]` or a rule's replacement,
+ * would make every snapshot fail at run time. Here it fails once, by name.
+ */
 function readRedactRules(value: unknown): readonly RedactRule[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ConfigError("redact must be an array");
-  return value.map((rule, index) =>
+  const rules = value.map((rule, index) =>
     readRedactRule(rule, `redact[${String(index)}]`),
   );
+  rules.forEach((rule, index) => {
+    const pattern = rule instanceof RegExp ? rule : patternOf(rule);
+    if (pattern !== undefined && canMatchEmpty(pattern)) {
+      throw new ConfigError(
+        `redact[${String(index)}] can match an empty string, so its replacement would be inserted between characters and redaction could never settle`,
+      );
+    }
+  });
+  const conflict = findRedactionConflict(rules);
+  if (conflict !== undefined) throw new ConfigError(conflictMessage(conflict));
+  return rules;
+}
+
+function patternOf(rule: RedactRule): RegExp | undefined {
+  return "pattern" in rule ? rule.pattern : undefined;
+}
+
+function conflictMessage(conflict: RedactionConflict): string {
+  const culprit =
+    typeof conflict.culprit === "number"
+      ? `redact[${String(conflict.culprit)}]`
+      : `The built-in "${conflict.culprit}" pattern`;
+  const token = JSON.stringify(conflict.token);
+  const what =
+    conflict.source === undefined
+      ? `${token}, the text redaction leaves behind`
+      : conflict.source === conflict.culprit
+        ? `its own replacement ${token}`
+        : `${token}, the replacement set by redact[${String(conflict.source)}]`;
+  return `${culprit} matches ${what}, so redaction could never settle and every snapshot it touched would fail with RedactionError`;
 }
 
 function readRedactRule(value: unknown, path: string): RedactRule {
@@ -767,11 +803,23 @@ function readReplacements(value: unknown): readonly NormaliseReplacement[] {
     if (!(entry["pattern"] instanceof RegExp)) {
       throw new ConfigError(`${path}.pattern must be a RegExp`);
     }
+    const pattern = entry["pattern"];
     const placeholder = readPlainString(
       entry["placeholder"],
       `${path}.placeholder`,
     );
-    return { pattern: entry["pattern"], placeholder };
+    // An empty match inserts the placeholder between characters, and a
+    // placeholder the pattern matches would be replaced again when the
+    // normalised text is normalised a second time.
+    if (canMatchEmpty(pattern)) {
+      throw new ConfigError(`${path}.pattern can match an empty string`);
+    }
+    if (withoutStateFlags(pattern).test(placeholder)) {
+      throw new ConfigError(
+        `${path}.pattern matches its own placeholder ${JSON.stringify(placeholder)}, so normalising the text again would change it`,
+      );
+    }
+    return { pattern, placeholder };
   });
 }
 
