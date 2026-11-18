@@ -1,4 +1,4 @@
-import type { Question } from "./decider.js";
+import type { Answer, Question } from "./decider.js";
 import { validateAnswer } from "./decider.js";
 import { QuestionError } from "./errors.js";
 
@@ -32,7 +32,24 @@ export function assertThresholds(thresholds: Thresholds): void {
 }
 
 /**
+ * What the gate knows about how the answer was produced.
+ * `truncated` is the flag `callDecider` returns: pruning cut the snapshot the
+ * decider saw.
+ */
+export interface GateContext {
+  readonly truncated?: boolean;
+}
+
+/**
  * Map one answer onto a verdict.
+ *
+ * Abstained: always `needs-review`, whatever the confidence. The decider said
+ * it could not decide, so there is nothing to pass or fail.
+ *
+ * Truncated (`context.truncated === true`): a verdict that would be `fail`
+ * becomes `needs-review`; `pass` and `needs-review` are unchanged. A "no" on a
+ * pruned page may only mean the evidence was pruned away, while a "yes" means
+ * the evidence was seen. This applies to yes/no and to score.
  *
  * Yes/no: confidence is how sure the decider is of the value it returned.
  * `yes` passes only when confidence >= pass. `no` fails only when confidence
@@ -48,11 +65,31 @@ export function assertThresholds(thresholds: Thresholds): void {
  */
 export function gateAnswer(
   question: Question,
-  answer: { readonly value: string; readonly confidence: number },
+  answer: Answer,
   thresholds: Thresholds = DEFAULT_THRESHOLDS,
+  context?: GateContext,
+): Verdict {
+  // A non-boolean flag (say the string "true") would otherwise read as
+  // "not truncated" and let a cut-off snapshot fail, so it is rejected.
+  const truncated: unknown = context?.truncated;
+  if (truncated !== undefined && typeof truncated !== "boolean") {
+    throw new QuestionError("Gate context truncated must be a boolean");
+  }
+  const verdict = gateWholeAnswer(question, answer, thresholds);
+  if (verdict === "fail" && truncated === true) {
+    return "needs-review";
+  }
+  return verdict;
+}
+
+function gateWholeAnswer(
+  question: Question,
+  answer: Answer,
+  thresholds: Thresholds,
 ): Verdict {
   assertThresholds(thresholds);
   validateAnswer(question, answer);
+  if (answer.abstained === true) return "needs-review";
   switch (question.kind) {
     case "yesno":
       if (answer.confidence >= thresholds.pass) {
@@ -75,12 +112,15 @@ export function gateAnswer(
  * Confidence-adjusted score position in [0, 1].
  * Yes/no is not converted into P(the statement holds): that conversion flipped
  * a weak answer. Choice has no probability of "yes" either. Use `gateAnswer`.
+ * An abstained answer has no position either: it chose no level.
  */
-export function probabilityOfYes(
-  question: Question,
-  answer: { readonly value: string; readonly confidence: number },
-): number {
+export function probabilityOfYes(question: Question, answer: Answer): number {
   validateAnswer(question, answer);
+  if (answer.abstained === true) {
+    throw new QuestionError(
+      "An abstained answer has no probability of yes. Use gateAnswer.",
+    );
+  }
   switch (question.kind) {
     case "yesno":
       throw new QuestionError(

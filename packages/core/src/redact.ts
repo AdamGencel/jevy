@@ -3,6 +3,7 @@ import { RedactionError } from "./errors.js";
 import { collapseWhitespace, isRecord } from "./guards.js";
 import type { AccessibilityNode } from "./snapshot.js";
 import type { WalletContext } from "./decider.js";
+import { validateSnapshot } from "./validate.js";
 
 /** Stable replacement. Two different secrets in the same place hash the same. */
 export const REDACTED = "[REDACTED]";
@@ -14,13 +15,20 @@ const SECRET_FIELD_NAME =
 
 const SECRET_FIELD_ROLES = new Set(["textbox", "searchbox"]);
 
-const SECRET_AUTOCOMPLETE = new Set([
+/**
+ * `autocomplete` tokens that mark a field as secret whatever its label says.
+ * Exported so a snapshot source (the Playwright bridge) blanks the same
+ * fields core would, instead of keeping its own copy of the list.
+ */
+export const SECRET_AUTOCOMPLETE_TOKENS: readonly string[] = [
   "current-password",
   "new-password",
   "one-time-code",
   "cc-number",
   "cc-csc",
-]);
+];
+
+const SECRET_AUTOCOMPLETE = new Set(SECRET_AUTOCOMPLETE_TOKENS);
 
 /**
  * Wallet field names are split into words (`privateKey` → private, key).
@@ -145,13 +153,15 @@ export function redactText(
 /**
  * Copy a snapshot with secrets and direct personal data removed.
  * Structural fields (role, checked, disabled, …) are kept.
+ * A malformed, cyclic or too-deep snapshot throws `SnapshotError` before any
+ * text is read. A node object used in two places is redacted in both.
  */
 export function redactSnapshot(
   snapshot: AccessibilityNode,
   rules: readonly RedactRule[] = [],
 ): AccessibilityNode {
-  const seen = new WeakSet();
-  return redactSplitSeedPhrases(redactNode(snapshot, rules, seen));
+  validateSnapshot(snapshot);
+  return redactSplitSeedPhrases(redactNode(snapshot, rules));
 }
 
 type SeedField = "name" | "description" | "value" | "valuetext";
@@ -319,21 +329,11 @@ function isWalletSecretKey(key: string): boolean {
   return false;
 }
 
+/** Assumes `node` has passed `validateSnapshot`. */
 function redactNode(
   node: AccessibilityNode,
   rules: readonly RedactRule[],
-  seen: WeakSet<object>,
 ): AccessibilityNode {
-  if (typeof node !== "object") {
-    throw new RedactionError(
-      "Cannot redact a snapshot node that is not an object",
-    );
-  }
-  if (seen.has(node)) {
-    throw new RedactionError("Cannot redact a cyclic accessibility snapshot");
-  }
-  seen.add(node);
-
   const roleRule = matchingRoleRule(node, rules);
   const secret = isSecretField(node) || roleRule !== undefined;
   const replacement = roleRule?.replacement ?? REDACTED;
@@ -398,9 +398,7 @@ function redactNode(
     next.valuetext = secret ? replacement : redactText(node.valuetext, rules);
   }
   if (node.children !== undefined) {
-    next.children = node.children.map((child) =>
-      redactNode(child, rules, seen),
-    );
+    next.children = node.children.map((child) => redactNode(child, rules));
   }
   return next;
 }
@@ -495,6 +493,93 @@ function assertStable(output: string, rules: readonly RedactRule[]): void {
       "Redaction failed closed: a secret or personal-data pattern still matched after replacement. The text was not hashed or returned.",
     );
   }
+}
+
+/**
+ * Text redaction would change again, and what changes it. `source` is the
+ * index of the rule whose replacement `token` is, or undefined for
+ * `[REDACTED]`. `culprit` is the index of the rule that matches it, or the
+ * name of a built-in pattern.
+ */
+export interface RedactionConflict {
+  readonly token: string;
+  readonly source: number | undefined;
+  readonly culprit: number | string;
+}
+
+/**
+ * Find a replacement that `rules` would redact again. Redaction checks that a
+ * second pass changes nothing, so such a rule set makes every redaction that
+ * leaves the token behind throw `RedactionError`, page after page. Checking
+ * the tokens up front turns that into one clear config error. The token is
+ * checked as written and with its whitespace collapsed, since normalisation
+ * collapses it before the tree is checked again.
+ */
+export function findRedactionConflict(
+  rules: readonly RedactRule[],
+): RedactionConflict | undefined {
+  const tokens: { token: string; source: number | undefined }[] = [
+    { token: REDACTED, source: undefined },
+  ];
+  rules.forEach((rule, index) => {
+    const replacement = replacementOf(rule);
+    if (replacement === undefined) return;
+    tokens.push({ token: replacement, source: index });
+    const collapsed = collapseWhitespace(replacement);
+    if (collapsed !== replacement) {
+      tokens.push({ token: collapsed, source: index });
+    }
+  });
+  for (const { token, source } of tokens) {
+    const culprit = redactionCulprit(token, rules);
+    if (culprit !== undefined) return { token, source, culprit };
+  }
+  return undefined;
+}
+
+/**
+ * What would redact `token` (a rule index or a built-in pattern name), or
+ * undefined when redaction leaves it as it is. For text written into the tree
+ * after redaction, such as a normalisation placeholder, that is checked again.
+ */
+export function redactionCulprit(
+  token: string,
+  rules: readonly RedactRule[],
+): number | string | undefined {
+  if (replaceSecrets(token, rules) === token) return undefined;
+  return firstChange(token, rules);
+}
+
+function replacementOf(rule: RedactRule): string | undefined {
+  if (rule instanceof RegExp) return undefined;
+  return rule.replacement;
+}
+
+/**
+ * The first step of `replaceSecrets` that changes `input`. Every earlier step
+ * left the text as it was, so this step saw `input` itself.
+ */
+function firstChange(
+  input: string,
+  rules: readonly RedactRule[],
+): number | string {
+  if (findSeedSpans(input).length > 0) return "seed-phrase";
+  for (const pattern of TEXT_PATTERNS) {
+    if (replaceGlobal(input, pattern.pattern, REDACTED) !== input) {
+      return pattern.name;
+    }
+  }
+  for (const [index, rule] of rules.entries()) {
+    if (rule instanceof RegExp) {
+      if (replaceGlobal(input, rule, REDACTED) !== input) return index;
+    } else if (isPatternRule(rule)) {
+      const replacement = rule.replacement ?? REDACTED;
+      if (replaceGlobal(input, rule.pattern, replacement) !== input) {
+        return index;
+      }
+    }
+  }
+  return "the redact rules";
 }
 
 interface WordToken {

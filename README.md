@@ -1,10 +1,12 @@
-# Jevy — the AI layer for the Playwright suite you already have
+# Jevy — a test framework for the agentic era
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: M1 (core) is in the tree.** `@jevyjs/core` implements the Decider types, verdicts, snapshot hashing, redaction, and the `jevy.config.ts` loader (including `decider: "kev"`). There is still no decision cache, decider adapter, recorder, or Playwright plugin. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. The commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: early. Roadmap step 1 is in the tree.** What exists today: `@jevyjs/core` (decider contract, three verdicts, snapshot hashing, redaction, pruning, config loader, and the decision cache with replay), `@jevyjs/playwright` (turns a Playwright page into the snapshot core hashes; no `toSatisfy` yet), and `jevy guard` in `@jevyjs/cli`. There is no decider adapter, `toSatisfy` matcher, reporter or wallet pack yet. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm (all packages publish under `@jevyjs/*`; installing `@jevyjs/cli` gives you the `jevy` command). Nothing here publishes automatically. Apart from the `jevy guard` section, the commands and APIs below show the *intended* usage and will change. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
-Jevy is the AI layer for the Playwright suite you already have. It plugs into `@playwright/test` instead of being a new runner. CI stays trustworthy, and a replay run makes no model calls:
+Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing; a result you can trust is. Jevy is built for that: an agent can run it and read it without a person, it flags a test that was quietly weakened, cached verdicts replay with no model call, a doubtful answer is `needs-review` and never a guess, and deciders are measured before they are trusted. The plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+Playwright is the first runner. Jevy plugs into `@playwright/test` instead of being a new runner. CI stays trustworthy, and a replay run makes no model calls:
 
 - **Confidence gates are on by default.** A weak answer becomes `needs-review` (warn on pull requests, fail on `main`) instead of a guessed pass or fail.
 - **Verdicts and actions are cached in git.** Each entry is keyed on the decider and the model. Replay re-checks the gates, so CI makes zero model calls.
@@ -17,6 +19,59 @@ Jevy is an open-source TypeScript project, distributed on npm. This repository c
 Replaying recorded actions is not a Jevy-only idea. The claim here is narrower. Assertion verdicts are cached as well as actions, each one bound to the redacted state and to the decider and model, and the gates run again on replay.
 
 Jevy is an independent, personal open-source project by Adam Gencel. It is not affiliated with, endorsed by, or sponsored by TypeSafe AI, Inc. or any employer. Jev is a trademark of TypeSafe AI, Inc. and is used here only to identify the model Jevy can call. Jev is one supported backend; Kev (local) and any LLM you plug in work too. v0.1 targets Playwright only.
+
+## `jevy guard` (works today)
+
+A coding agent that writes the code also edits the tests, and the quickest way to turn a failing test green is to weaken it. `jevy guard` compares two versions of your repo and lists every change that could weaken your checks, so a person can review them. It does not call a model. It parses files with the TypeScript compiler and never runs code from your repo.
+
+    jevy guard --base origin/main               # compare the working tree, untracked files included
+    jevy guard --base origin/main --head HEAD   # compare two commits
+    jevy guard --base origin/main --json        # machine-readable output
+
+What it catches:
+- **Weakening, which fails by default.** It catches:
+  - a deleted test file or test
+  - fewer `expect` calls in a test
+  - a new `.skip`, `.fixme`, `.todo`, `x`-prefixed test, `test.skip()`/`test.fixme()` call or `test.step.skip`
+  - a new `.only`
+  - a new `test.fail`
+  - an `expect` that became `expect.soft`
+  - a lower `thresholds.pass`
+  - `ci.needsReview.pr` or `.main` moved from `"fail"` to `"warn"`
+  - a decision-cache line added with a non-null `reviewedBy`. Approvals must be made by a human.
+- **Review, which does not fail by default.** It flags:
+  - a changed `toSatisfy` statement
+  - a changed matcher, a changed literal argument, or an added `.not`
+  - a changed test whose title is not a string literal
+  - a changed `.each` table
+  - changed `redact`, `normalise` or `decider` settings, and any other config change
+  - raised Playwright `retries`, or changed test selection (`testIgnore`, `testMatch`, `grep` and similar)
+  - added or removed decision records
+  - a file that does not parse
+- **Info:** added tests, added assertions, renamed tests (same body under a new title).
+
+Reformatting, comments, reordered imports or tests, and renamed variables produce no findings.
+
+Options: `--fail-on weakening|review|never` (default `weakening`), `--cache-dir <dir>` (default `.jevy/decisions`), `--cwd <dir>`.
+
+Exit codes: `0` nothing at or above `--fail-on`; `1` something is; `2` usage or git error (unknown ref, not a git repo).
+
+In CI, run it next to your tests on every pull request. Compare against the merge base, not the tip of the target branch; otherwise tests added to the target after your branch started look like tests you removed. Fetch full history first (`fetch-depth: 0`):
+
+    - run: npx jevy guard --base "$(git merge-base origin/${{ github.base_ref }} HEAD)" --head HEAD
+
+JSON (`--json`) prints exactly one document. The schema is versioned by `v`. Findings are sorted by file, then line, then kind, so the output is byte-identical across runs:
+
+    { "v": 1, "tool": "jevy-guard", "base": "origin/main", "head": "HEAD",
+      "summary": { "weakening": 1, "review": 0, "info": 2 },
+      "findings": [ { "kind": "assertion-removed", "severity": "weakening",
+        "file": "tests/checkout.spec.ts", "test": ["checkout", "pays by card"], "line": 4,
+        "message": "checkout > pays by card has 1 fewer assertion (2 -> 1): removed toHaveText",
+        "before": "expect(…).toHaveText(\"Paid\")" } ] }
+
+`head` is `"working-tree"` when `--head` is omitted. `test`, `line`, `before` and `after` appear only when they apply. `line` is the line in the head version, or in the base version when the thing it points to is gone.
+
+Known limits. It is a mechanical check, so it does not see: a removed `await` in front of an `expect`; assertions inside helper functions or a custom `expect` wrapper; a changed subject or argument that is not a literal; an early `return` or a `try`/`catch` around assertions; tests in files outside the default test globs; a decision record edited in place, which shows as one removal and one addition for review. A test with a non-literal title is only ever flagged for review.
 
 ## How Jevy compares
 
@@ -106,7 +161,7 @@ web3: {
 
 ## Three levels
 
-The path for a suite you already run is level 2. Level 1 is for a flow that has no spec yet. Level 3 is planned for v0.2.
+The path for a suite you already run is level 2. Level 1 is for a flow that has no spec yet. Level 3 comes later. This section predates the roadmap re-order of 18 Nov 2026: recording a flow and repairing a locator are now planned as tools the developer's own coding agent calls (roadmap step 6), not as Jevy's own agent loop.
 
 ### Level 2: existing Playwright tests → add semantic assertions and locator-repair suggestions (v0.1)
 
@@ -181,17 +236,17 @@ The project will publish a public seed dataset of about 200 labelled cases, take
 
 ## Packages
 
-The workspace matches this layout. Each package builds. `@jevyjs/core` implements its milestone (M1); the others are still stubs.
+The workspace matches this layout. Each package builds. The last column says what is implemented today.
 
-| Package | Purpose |
-|---|---|
-| `@jevyjs/core` | Decider interface, decision cache, verdicts, accessibility snapshot handling |
-| `@jevyjs/playwright` | Plugin: `toSatisfy`, locator repair suggestions, reporter |
-| `@jevyjs/cli` | CLI (bin `jevy`): `record`, `eval`, `cache`, later `properties` |
-| `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter |
-| `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter |
-| `@jevyjs/deciders-llm` | Generic LLM-judge adapter |
-| `@jevyjs/web3` | Wallet pack: mock EIP-1193 provider, prompt classification, policy, viem decoding, user-configured fork or testnet |
+| Package | Purpose | Today |
+|---|---|---|
+| `@jevyjs/core` | Decider interface, decision cache, verdicts, accessibility snapshot handling | Implemented |
+| `@jevyjs/playwright` | Plugin: page snapshots, `toSatisfy`, reporter | Snapshots only |
+| `@jevyjs/cli` | CLI (bin `jevy`): `guard`, later `cache`, `eval`, `init` | `guard` only |
+| `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter | Stub |
+| `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter | Stub |
+| `@jevyjs/deciders-llm` | Generic LLM-judge adapter | Stub |
+| `@jevyjs/web3` | Wallet pack: mock EIP-1193 provider, prompt classification, policy, viem decoding, user-configured fork or testnet | Stub |
 
 ## Privacy note
 

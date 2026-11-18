@@ -40,9 +40,17 @@ export interface ScoreQuestion {
 
 export type Question = ChoiceQuestion | YesNoQuestion | ScoreQuestion;
 
+/**
+ * `abstained: true` means the decider declined to answer: the state did not
+ * let it decide. `value` is then free text (a reason or "unknown") rather
+ * than yes/no, an option id or a level, and the verdict is always
+ * `needs-review`. A decider that cannot tell must abstain rather than guess,
+ * because a guessed `no` would be a `fail` that nobody earned.
+ */
 export interface Answer {
   readonly value: string;
   readonly confidence: number;
+  readonly abstained?: boolean;
   readonly raw?: unknown;
 }
 
@@ -146,6 +154,12 @@ export function validateAnswer(question: Question, answer: Answer): void {
       "Answer confidence must be a finite number from 0 to 1",
     );
   }
+  const abstained: unknown = answer.abstained;
+  if (abstained !== undefined && typeof abstained !== "boolean") {
+    throw new QuestionError("Answer abstained must be a boolean when set");
+  }
+  // An abstention carries no value to check against the question.
+  if (abstained === true) return;
   switch (question.kind) {
     case "yesno":
       if (answer.value !== "yes" && answer.value !== "no") {
@@ -177,24 +191,38 @@ export function validateAnswer(question: Question, answer: Answer): void {
   }
 }
 
+/**
+ * Check that `answers` has exactly one valid answer per question.
+ * Both directions use own properties only. A plain `answers[key]` lookup
+ * would find `constructor` or `toString` on Object.prototype, so an answer
+ * for a question that was never asked (or a missing answer for a question
+ * named like a prototype member) would slip through.
+ */
 export function assertAnswers(
   questions: Readonly<Record<string, Question>>,
   answers: Readonly<Record<string, Answer>>,
 ): void {
   validateQuestions(questions);
   for (const key of Object.keys(questions)) {
-    const question = questions[key];
-    const answer = answers[key];
+    const question = ownValue(questions, key);
+    const answer = ownValue(answers, key);
     if (question === undefined || answer === undefined) {
       throw new QuestionError(`Missing answer for question "${key}"`);
     }
     validateAnswer(question, answer);
   }
   for (const key of Object.keys(answers)) {
-    if (questions[key] === undefined) {
+    if (ownValue(questions, key) === undefined) {
       throw new QuestionError(`Unexpected answer "${key}"`);
     }
   }
+}
+
+function ownValue<T>(
+  record: Readonly<Record<string, T>>,
+  key: string,
+): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
 function assertPrompt(prompt: string): void {

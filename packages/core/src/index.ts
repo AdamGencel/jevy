@@ -60,6 +60,7 @@ export {
 
 export {
   REDACTED,
+  SECRET_AUTOCOMPLETE_TOKENS,
   redactSnapshot,
   redactText,
   redactWallet,
@@ -83,8 +84,14 @@ export {
 } from "./prune.js";
 export type { PruneOptions, PrunedSnapshot } from "./prune.js";
 
+export { SNAPSHOT_RULES_VERSION, rulesFingerprint } from "./project.js";
+
 export { callDecider, prepareDecisionState } from "./prepare.js";
 export type { PreparedDecisionState } from "./prepare.js";
+export type { DecisionResult } from "./prepare.js";
+export type { GateContext } from "./verdict.js";
+
+export * from "./cache/index.js";
 
 export {
   CONFIG_FILENAMES,
@@ -122,3 +129,12 @@ export type {
   ResolvedWeb3,
   Web3Config,
 } from "./config.js";
+
+export {
+  MAX_SNAPSHOT_DEPTH,
+  MAX_SNAPSHOT_NODES,
+  validateSnapshot,
+} from "./validate.js";
+export { DEFAULT_KEEP_ROLES } from "./prune.js";
+export { findRedactionConflict } from "./redact.js";
+export type { RedactionConflict } from "./redact.js";

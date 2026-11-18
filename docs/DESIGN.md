@@ -1,6 +1,6 @@
 # Jevy — Design
 
-Status: **M1 is implemented in `@jevyjs/core`.** The Decider types, verdict gate, snapshot hash, redaction, and config loader match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise. The decision cache (M2) and the Jev, Kev, and LLM adapters (M3) are not implemented. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026), except the comparison with e2e, Stagehand and Midscene, which follows their public docs and packages as reviewed in November 2026. Anything marked *(estimate)* is a guess.
+Status: **M1 and roadmap step 1 are implemented.** `@jevyjs/core` has the Decider types, verdict gate, snapshot hash, redaction, config loader and the decision cache. `@jevyjs/playwright` has the snapshot bridge, and `@jevyjs/cli` has `jevy guard`. They match the sketches below except where [§12](#12-decisions-made-in-m1) says otherwise; §12.6 onward covers step 1. The deciders, `toSatisfy`, the reporter and the wallet pack are not implemented. The order of work is in [ROADMAP.md](ROADMAP.md), which was re-ordered on 18 Nov 2026: where this document still says M2–M9, v0.2 or "level 1", read the roadmap's mapping table. TypeScript snippets outside §12 are still signature sketches. Facts about third-party tools come from the project research notes (`RESEARCH.md` and `QA-APPROACHES.md`, 27 Oct 2026), except the comparison with e2e, Stagehand and Midscene, which follows their public docs and packages as reviewed in November 2026. Anything marked *(estimate)* is a guess.
 
 ## 1. Goals
 
@@ -225,43 +225,47 @@ Demos are recorded videos used in the README and for promotion. They are not par
 
 ## 6. Decision cache format
 
-**Location.** By default `.jevy/decisions/`, committed to git. One JSON Lines file per spec keeps diffs reviewable.
+This section describes what `@jevyjs/core` implements (step 1c).
 
-**Other storage.** For big suites, `cache.store` can point somewhere else:
-- an external directory, for example a separate repo or a CI cache volume;
-- a storage adapter (interface sketch: `get(key)`, `put(record)`, `list(spec)`).
+**Location and store.** By default `.jevy/decisions/`, committed to git. One JSON Lines file per spec at `<dir>/<spec>.jsonl` (for example `.jevy/decisions/tests/checkout.spec.ts.jsonl`). A spec path must be relative and use forward slashes, with no empty, `.` or `..` segment and no NUL; anything else is a `CacheError`. The store interface is `DecisionStore { latest(key), forStep(spec, step), append(records), list(spec?) }`. Core ships `JsonlDecisionStore({ dir })` and `MemoryDecisionStore` (for tests). The JSONL store reads every `.jsonl` file under `dir` once, on first use, and keeps an in-memory index. That suits one test run with a single writer per directory; open a new store to see files another process wrote. A malformed line is a `CacheError` naming `<file>:<line>`.
 
-The default stays in git.
+**Key.** `decisionKey` is `sha256:` plus hex over canonical JSON with the key order `{ v: 1, kind, question, options, snapshotHash, decider, model }`.
+- `question` is `questionText(question, redact)`: the prompt redacted and whitespace-collapsed, plus `\nCriteria: <criteria>` for a yes/no question with criteria.
+- `options` are the `{ id, label }` pairs sorted by id for a choice (a changed label changes the key), the levels in order for a score, and `[]` for yes/no.
+- `snapshotHash` is `hashSnapshot` of the redacted, normalised tree, or of the step's region. When a region is given, the decider is also shown only that region.
+- `DECISION_KEY_VERSION` is 1.
 
-**Redaction before write.** Records pass through the same redaction rules as decider calls before they are written. The built-in rules are patterns. They catch keys, emails, seed phrases and transaction hashes without a registration list of secret values. By default those rules remove:
-- strings that look like API keys, bearer tokens or private keys;
-- seed phrases;
-- email addresses and phone numbers;
-- values of password and secret fields;
-- any patterns the user adds.
-
-A redaction pass that fails blocks the write. The concrete patterns, and the rule that redaction runs before hashing as well as before a write, are in §12.
-
-**Key.** `sha256(kind, normalisedQuestion, optionIds, snapshotHash, deciderId, model)`.
-- `snapshotHash` covers only the *relevant* subtree: the step's target region, or the whole page for page-level checks.
-- Volatile attributes (timestamps, random IDs, counters) are normalised out by configurable rules, so cosmetic changes don't cause re-queries.
-
-**Record (one line):**
-
+**Record (one line, keys always in this order):**
 ```json
-{"v":1,"key":"sha256:…","spec":"tests/checkout.spec.ts","step":"toSatisfy#2",
- "kind":"yesno","question":"The page shows the order as confirmed","snapshotHash":"sha256:…",
- "decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"verdict":"pass",
- "thresholds":{"pass":0.8,"fail":0.5},"createdAt":"2026-10-27T22:00:00Z","reviewedBy":null}
+{"v":1,"key":"sha256:…","spec":"tests/checkout.spec.ts","step":"toSatisfy#2","kind":"yesno","question":"The page shows the order as confirmed","snapshotHash":"sha256:…","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"abstained":false,"truncated":false,"verdict":"pass","thresholds":{"pass":0.8,"fail":0.5},"rules":"sha256:…","createdAt":"2026-10-27T22:00:00.000Z","reviewedBy":null,"reviewVerdict":null}
 ```
+- `truncated`: the decider saw a cut-off snapshot.
+- `abstained`: the decider declined to answer.
+- `rules`: `rulesFingerprint` of the redact and normalise rules at write time.
+- `verdict` and `thresholds`: what applied at write time.
+- `createdAt`: ISO 8601 UTC.
+- `reviewedBy` and `reviewVerdict` (`"pass"` or `"fail"`) are both null or both set.
 
-**Rules**
-- **Records are immutable.** A re-query appends a new record, and `jevy cache prune` removes superseded ones.
-- **Human review is recorded.** `reviewedBy` is set when a human accepts a `needs-review` verdict, and that becomes the replayed answer.
-- **Model changes invalidate.** Changing the decider or model pin changes the key, so old decisions are never silently reused for a new model.
-- **No secrets.** Records store hashes and questions, not raw snapshots. Snapshots can optionally go to a gitignored debug folder.
-- **Write after a later check confirms (M2 follow-up).** An entry is persisted for replay only after a later check in the same test confirms the step. A step that has not been confirmed is not a hit.
-- **Say why an entry was not used (M2 follow-up).** A miss or a rejected hit reports a reason. The set includes `model-changed`, `snapshot-changed`, `regated-below-threshold` and `redaction-changed`, plus a miss that had no entry.
+`parseRecord` rejects any unknown field, a wrong `v`, or any malformed value with `CacheError`. A record never contains a snapshot or page text other than the question. Spec, step, question and answer go through `redactText` before anything is written, and a redaction failure writes nothing. An answer that redaction would change (other than an abstention's free text) is refused, because it could never be replayed.
+
+**Modes and hits.** `createDecisionSession({ store, mode, deciderId, model, decider?, thresholds, snapshot?, now?, memo? })` and `session.decide({ spec, step, question, state, region? })` return `{ verdict, source, key, snapshotHash, truncated, answer?, reason?, record? }`.
+- A hit with a human review returns `reviewVerdict` with source `review`, and is not gated.
+- Any other hit is re-gated with the current thresholds and the record's `truncated` flag (source `cache`). If the result differs from the stored verdict, the reason is `regated-below-threshold`.
+- `replay` never calls the decider; a miss is `needs-review` with source `none`.
+- `replay-or-query` calls the decider on a miss.
+- `record` always calls it.
+
+**Miss reasons.** Look at the step's records with the same question text. If there are none, the reason is `no-entry`. Otherwise compare with the most recent one: different `rules` gives `redaction-changed`; a different decider or model gives `model-changed`; anything else gives `snapshot-changed`.
+
+**Writes held until the test confirms.** Records from decider calls are held by the session. `confirm()` appends them (call it when the test passes), and `discard()` drops them (call it when it fails). A held record is not a hit.
+
+**Run memo.** `createRunMemo()` maps a key to the answer and truncation drawn in this process. Pass one memo to all sessions of a run: when the memo has the key, `decide` does not call the decider again, in any mode, and does not hold a second record. A Playwright retry therefore cannot draw a new answer.
+
+**Review semantics.** A human decision is recorded by appending a copy of the record with `reviewedBy` and `reviewVerdict` set. The last appended record for a key wins. Who may set `reviewedBy` is not restricted yet. `jevy guard` flags every approval added in a diff (§12.7), and roadmap step 4 makes approvals checkable.
+
+**Other storage.** `cache.store` in config is still rejected. A project that wants its records somewhere else can implement `DecisionStore`.
+
+**Still open.** Two specs that ask the same question about the same state share a key, and so share a record, including a human review. A retry that passes on an answer remembered from a failed first attempt writes no record, so the next run asks again. Both are to be settled with the Playwright plugin in step 2.
 
 ### Why a cached verdict is not the recording checking itself
 
@@ -401,7 +405,7 @@ e2e is the tool that drives an app at runtime, including on mobile. Jevy is the 
 - The question kind is `yesno`, as in the §5.1 sketch. Jev's wire type `noul` is for the adapter to map.
 - `LlmAdapter` is declared here so config can hold one. `llmDecider()` is not implemented.
 - `DecisionState` is the accessibility snapshot plus optional `url`, `goal`, and `wallet` fields. There is no screenshot field. `prepareDecisionState` throws if a `screenshot` property is present.
-- The snapshot is a structured tree in the shape of Playwright's accessibility snapshot (`role`, `name`, `value`, states, `children`). YAML aria snapshots are not accepted. Core does not depend on Playwright.
+- The snapshot is core's own `AccessibilityNode` tree (`role`, `name`, `value`, states, `children`). Core does not depend on Playwright. Current Playwright has no `page.accessibility`, so `@jevyjs/playwright` builds the tree from `locator.ariaSnapshot()` YAML with `parseAriaSnapshot`, and `snapshotAccessibility(pageOrLocator)` is the supported way to take one. That source fills role, name, value (inputs and textareas only), checked, pressed, disabled, expanded and selected (true only), level and invalid. It never fills description, required, readonly, modal, multiline, multiselectable, orientation, keyshortcuts, roledescription, haspopup, autocomplete, valuetext, valuemin or valuemax, so a hash of a Playwright page cannot see a change to those. It also drops link URLs, which core has no field for. The evidence is in [spikes/snapshot-source.md](spikes/snapshot-source.md).
 - `callDecider` redacts and prunes, then calls `Decider.decide`. That is the supported way to hand a page to a decider.
 
 ### 12.2 Verdicts
@@ -442,7 +446,9 @@ A region is `{ role, name? }`, matched on the normalised tree, first hit in tree
 
 `normalise.disable` can turn off `uuid`, `timestamp`, `relative-time`, or `long-digits`. Extra `replace` patterns and `dropRoles` are added. `none` and `presentation` always drop.
 
-The token estimate is `ceil(canonicalJson.length / 4)`. It is not a model tokenizer. Default prune limits are 400 nodes, depth 16, and 12,000 tokens. Kev uses 6,000 tokens so a question still fits in the 8,192-token window. Deepest leaves go first; ties go to the rightmost path. The root stays. If the root name alone exceeds the budget, it is shortened. `truncated` is reported and is not hashed. Because a node always has lower priority than its descendants, the removal order is fixed up front and the number of removals is found by binary search, so pruning is O(n log n). `callDecider` sets the budget from `decider.id`, so a Kev decider always gets the Kev budget.
+The token estimate is…"):
+
+The token estimate is `ceil(canonicalJson.length / 4)`. It is not a model tokenizer. Default prune limits are 400 nodes, depth 16, and 12,000 tokens. Kev uses 6,000 tokens so a question still fits in the 8,192-token window. `maxNodes` must be an integer of at least 1, `maxDepth` an integer of at least 0, and `maxTokens` a finite number above 0; anything else throws `SnapshotError`. Depth is cut first, for every node. Then nodes are removed in a fixed order. A node is protected when its role is in `keepRoles`, when it sits inside such a node, or when it contains one. The default `keepRoles` is `DEFAULT_KEEP_ROLES`: alert, alertdialog, dialog, status and heading, because an error banner, a dialog or a heading is what a question is most often about. Every unprotected node goes before any protected one. Within each group the deepest node goes first, and ties go to the one latest in document order, so earlier content survives. `keepRoles` replaces the default, and `keepRoles: []` gives the plain deepest-first order. The root stays. An unprotected node never has a protected descendant, so a node always comes after its descendants. That means the removal order is fixed up front and the number of removals is found by binary search, so pruning is O(n log n). If the bare root is still over budget, its name, description, valuetext, string value and roledescription are shortened in that order. Each is dropped entirely before the next is touched, and a surrogate pair is never split. If even the bare root does not fit, `SnapshotError` is thrown. A pruned result is never over its node or token budget. `truncated` is reported and is not hashed. `callDecider` sets the budget from `decider.id`, so a Kev decider always gets the Kev budget.
 
 ### 12.4 Redaction
 
@@ -454,9 +460,13 @@ Built-ins remove PEM private keys, AWS access keys, GitHub tokens, Slack tokens,
 
 A textbox or searchbox whose name or autocomplete says password, passphrase, secret, API key, mnemonic, seed phrase, recovery phrase, or private key (with or without a space, hyphen or underscore, so `privateKey` counts) has its value replaced. The accessible name stays, so the hash still shows that the control exists. The replacement token is `[REDACTED]`, so two secrets in the same place hash the same. Wallet field names are split into words (`privateKey` becomes private, key). A field is replaced entirely when one word is secret, seed, mnemonic, password, passphrase, passcode, privkey or apikey, or two adjacent words are private key, API key, access/auth/refresh/session/bearer token, or recovery phrase. Plain `token`, `key` and `publicKey` are kept: on an approve prompt the token address is the thing under test. Every value still passes through the text patterns, so a raw key in a field such as `pk` is caught there.
 
+Before any text is read, `redactSnapshot` and `normaliseSnapshot` (and so `hashSnapshot`, `prepareDecisionState` and `callDecider`) run `validateSnapshot`. A node that is null, an array or a primitive throws `SnapshotError`, and so does: a role that is not a non-empty string; `children` that is not an array; a `value` that is not a string or a finite number; or a name, description, valuetext, roledescription, keyshortcuts, invalid, autocomplete, haspopup or orientation that is not a string. The message names the problem and the node's path, such as `children[2].children[0]`. A node object used in two places is two nodes and hashes like a copy. Only a node that is its own ancestor is a cycle. A tree deeper than `MAX_SNAPSHOT_DEPTH` (512 levels below the root) is rejected, so a runaway tree fails with a clear error instead of overflowing the stack. A tree with more than `MAX_SNAPSHOT_NODES` (250,000) nodes, counting a reused node once for each place it appears, is rejected too: a few dozen objects that each hold the next one twice would otherwise expand without end.
+
+The aria snapshot Playwright produces prints password and other secret field values in clear, and drops `type` and `autocomplete`. So for a Playwright page the autocomplete rule above cannot fire inside core. `snapshotAccessibility` reads password inputs and inputs with a secret autocomplete token (`SECRET_AUTOCOMPLETE_TOKENS`, exported by core) from the DOM in the same step, and replaces their values with `[REDACTED]` wherever they appear in the tree, whatever the label says. Known gap: a password field that a "show password" control has switched to `type="text"`, and that has no secret autocomplete token, is not recognised.
+
 ### 12.5 Config
 
-`defineConfig` only types the object. `loadConfig` executes `jevy.config.ts`, then `.mts`, `.js`, or `.mjs`, using Node's type stripping (on by default from Node 22.18, which is the minimum), and `parseConfig` checks the result. Unknown keys throw. A missing file throws. There is no default decider: a hosted model is selected only by writing `decider: "jev"` or by passing an override. `decider: "kev"` is the one-line local switch. `selectDecider(config, "kev")` is the per-test override this package can apply. Playwright's `test.use` is M4 and will call the same function. An override does not reuse the project's model pin or fallback list. Fallback ids are checked and stored. Nothing calls them.
+`defineConfig` only types the object. `loadConfig` executes `jevy.config.ts`, then `.mts`, `.js`, or `.mjs`, using Node's type stripping (on by default from Node 22.18, which is the minimum), and `parseConfig` checks the result. Unknown keys throw. A missing file throws. There is no default decider: a hosted model is selected only by writing `decider: "jev"` or by passing an override. `decider: "kev"` is the one-line local switch. `selectDecider(config, "kev")` is the per-test override this package can apply. Playwright's `test.use` is M4 and will call the same function. An override to the decider the project already selects keeps the project's model pin; an override to a different decider uses that decider's own configured model. An override never reuses the fallback list. Fallback ids are checked and stored. Nothing calls them.
 
 When Jev is selected and unconfigured, the pin is `jev-1.14.0`, the base URL is `https://api.typesafe.ai`, and the key is read later from `TYPESAFE_API_KEY`. The loader stores that name and does not read the value. Kev defaults to `kev-4b@v1.0` at `http://127.0.0.1:8009`. An LLM decider requires `deciders.llm.adapter.complete` and an explicit `model`.
 
@@ -465,3 +475,40 @@ When Jev is selected and unconfigured, the pin is `jev-1.14.0`, the base URL is 
 `cache.dir` defaults to `.jevy/decisions`. `cache.mode` is `replay` when `CI` is set and is not `""`, `"0"`, or `"false"`; otherwise `record`. `cache.store` throws until M2. `ci.needsReview` defaults to warn on pull requests and fail on `main`.
 
 `web3` is optional. When present, `driver` defaults to `"mock"` and `allowMainnetSigning` defaults to false. A known mainnet chain id adds a warning. The wallet pack does not exist yet; the warning records the intended refusal. `privateKeyEnv` and `rpcUrlEnv` must be variable names. A pasted key fails validation. `snapshotOptionsFromConfig` passes the loaded redact rules and normalisation into the hash.
+
+`parseConfig` rejects rules that could never settle. Redaction fails closed when a second pass still changes the text, so these would otherwise fail every snapshot at run time:
+- A `redact` pattern (bare RegExp or `{ pattern }`) that can match an empty string. This includes zero-length matches such as `\b` or a lookahead, found by probing a sample text.
+- A rule set under which `[REDACTED]`, or any rule's `replacement`, would be redacted again, for example `/RED/`. The error names the rule, or the built-in pattern, and whose replacement it matched.
+- A `normalise.replace` pattern that can match an empty string, or that matches its own placeholder.
+These checks build a fresh expression without the `g`, `y` and `d` flags, so a rule's `lastIndex` neither affects the check nor is changed by it. `findRedactionConflict(rules)` is exported for tools that build rule sets themselves.
+
+### 12.6 Step 1: the decider contract
+
+**Truncation reaches the verdict.** `callDecider` returns a `DecisionResult` of `{ answers, truncated }`. `truncated` is what pruning reported for the snapshot the decider actually saw. Before this change it was computed and then thrown away. Pass it on as `gateAnswer(question, answer, thresholds, { truncated })`. When `truncated` is `true`, a verdict that would be `fail` becomes `needs-review`, for yes/no and for score. `pass` and `needs-review` do not change, and a choice is never `fail` in any case. The reason for the asymmetry: a "no" about a pruned page may only mean the evidence was pruned away, while a "yes" means the evidence was seen. A `truncated` value that is not a boolean throws `QuestionError`.
+
+**Abstention.** An `Answer` may set `abstained: true` when the decider cannot decide from the state it was given. The answer must still have a non-empty string `value` (free text such as a reason) and a `confidence` in [0, 1]. The value is not checked against the yes/no values, option ids or levels. An abstained answer always gates to `needs-review`, whatever its confidence, and `probabilityOfYes` refuses it with a `QuestionError`. An `abstained` field that is present but not a boolean is a `QuestionError`. A decider should abstain rather than guess, because a guessed "no" would be an unearned `fail`.
+
+**Answer keys are own properties.** `assertAnswers` checks own properties only (`Object.hasOwn`), in both directions. Without this, an extra answer named `constructor`, `toString` or `__proto__` would be accepted, and a missing answer for a question with such a name would be found on `Object.prototype`.
+
+**The hash carries a rules version.** The hashed digest is the canonical JSON `{ v: SNAPSHOT_HASH_VERSION, rules: SNAPSHOT_RULES_VERSION, tree }`, with `SNAPSHOT_HASH_VERSION = 2` and `SNAPSHOT_RULES_VERSION = 2`. Rules version 1 was the built-in rule set before the November 2026 seed-phrase and key-pattern changes. A change to a built-in redaction or normalisation rule can change the hashed tree without any change to the hashing code, so the built-in rules carry their own version. `golden-hash.test.ts` pins eight snapshots to literal hashes: a plain page, an email address, a password textbox, a seed phrase split one word per node, a 0x private key, volatile text, an unwrapped generic node, and a region slice. Every snapshot hash differs from the version-1 hashes, so a cache keyed on the old hashes will miss.
+
+**Rules fingerprint.** `rulesFingerprint({ redact, normalise })` returns `sha256:` plus 64 hex characters over canonical JSON of four things: the hash version, the rules version, the project's redact rules in order, and the resolved normalise options. In that JSON:
+- a RegExp is written as `{ source, flags }`, with `g`, `y` and `d` dropped because matching ignores them, and the other flags sorted;
+- a role rule is written as its role, its name (a string or a serialised RegExp) and its replacement;
+- `disable` and `dropRoles` are sorted, and `replace` keeps its order.
+
+`region` is not included. Equal rules give an equal fingerprint, and any rule change that could change a snapshot hash gives a different one. The decision cache will store the fingerprint so that a miss can say "your redaction or normalisation rules changed" instead of "the page changed".
+
+**The question is redacted too.** `callDecider` redacts each prompt, yes/no criteria and choice label with the same rules as the snapshot before the decider sees them: a prompt is written by a person or an agent and can quote an email or a key as easily as a page can. Option ids and score levels are the values a decider answers with, so they are sent as written. One that redaction would change is refused with `RedactionError` before any call. Answers are checked against the questions as the caller wrote them.
+
+### 12.7 Step 1: guard
+
+`jevy guard` (in @jevyjs/cli) is a pure, model-free diff. A `RepoReader` lists the changed files and reads both versions. The git implementation uses `execFile` with argument arrays, `git diff --name-status -M -z` and `git cat-file blob`, plus untracked files when the head is the working tree. Each file goes to one of four comparisons by path:
+- test files (`**/*.{spec,test}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}` outside node_modules and dist)
+- `jevy.config.*`
+- `playwright.config.*`
+- `*.jsonl` under the cache directory
+
+Sources are parsed with `ts.createSourceFile` and never executed. A file with a syntax error is reported for review instead of being compared, because a recovered tree could invent or hide changes. Tests are identified by their describe-plus-title path. The skip/only/fail markers on a test include those of every enclosing describe and of the file. Assertions are compared as multisets of matcher names and of 'signatures' (subject and arguments kept only when they are literals), so formatting, reordering and variable renames are not reported as changes. Decision files are diffed as multisets of lines because records are append-only. A newly added line with a non-null `reviewedBy` is weakening until Step 4 makes approvals verifiable. Findings are sorted by file, line and kind, and the JSON report is versioned (`v: 1`).
+
+With `--head`, the comparison is between the two commits as given. In a pull request, pass the merge base as `--base`; otherwise tests added to the target branch after the pull request branched look like tests it removed. Known limits are listed in the README.

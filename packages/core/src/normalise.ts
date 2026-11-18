@@ -1,5 +1,5 @@
-import { SnapshotError } from "./errors.js";
 import { collapseWhitespace } from "./guards.js";
+import { validateSnapshot } from "./validate.js";
 import {
   resolveNormalise,
   type AccessibilityNode,
@@ -40,14 +40,15 @@ const BUILTIN_PATTERNS: readonly {
  * children. Text rules: collapse whitespace, then replace volatile spans.
  * Fields that are not part of the hash allow-list are dropped, so the tree
  * that is hashed and the tree that would be sent stay the same.
+ * A malformed, cyclic or too-deep snapshot throws `SnapshotError`.
  */
 export function normaliseSnapshot(
   snapshot: AccessibilityNode,
   overrides?: NormaliseOverrides,
 ): AccessibilityNode {
+  validateSnapshot(snapshot);
   const options = resolveNormalise(overrides);
-  const seen = new WeakSet();
-  const nodes = flatten(snapshot, options, seen, true);
+  const nodes = flatten(snapshot, options, true);
   if (nodes.length === 1) {
     const only = nodes[0];
     if (only !== undefined) return only;
@@ -60,6 +61,28 @@ export function normaliseText(
   overrides?: NormaliseOverrides,
 ): string {
   return applyTextRules(collapseWhitespace(input), resolveNormalise(overrides));
+}
+
+/**
+ * Every placeholder normalisation can write under `options`, with what
+ * writes it: a built-in id, or the index into `options.replace`. Normalised
+ * text is checked for secrets again, so config loading uses this to reject a
+ * redact rule that would match one.
+ */
+export function normalisePlaceholders(options: NormaliseOptions): readonly {
+  readonly placeholder: string;
+  readonly source: NormaliseBuiltin | number;
+}[] {
+  const disabled = new Set(options.disable);
+  return [
+    ...BUILTIN_PATTERNS.filter((builtin) => !disabled.has(builtin.id)).map(
+      (builtin) => ({ placeholder: builtin.placeholder, source: builtin.id }),
+    ),
+    ...options.replace.map((rule, index) => ({
+      placeholder: rule.placeholder,
+      source: index,
+    })),
+  ];
 }
 
 /**
@@ -97,15 +120,14 @@ export function canonicalSnapshotJson(snapshot: AccessibilityNode): string {
   return JSON.stringify(canonicalSnapshot(snapshot));
 }
 
+/** Assumes `node` has passed `validateSnapshot`. */
 function flatten(
   node: AccessibilityNode,
   options: NormaliseOptions,
-  seen: WeakSet<object>,
   isRoot: boolean,
 ): AccessibilityNode[] {
-  assertNode(node, seen);
   const children = (node.children ?? []).flatMap((child) =>
-    flatten(child, options, seen, false),
+    flatten(child, options, false),
   );
   if (!isRoot && shouldUnwrap(node, options)) return children;
   return [buildNode(node, children, options)];
@@ -226,34 +248,6 @@ function replaceGlobal(
 ): string {
   const flags = `${pattern.flags.replace(/[gyd]/g, "")}g`;
   return input.replace(new RegExp(pattern.source, flags), replacement);
-}
-
-function assertNode(node: AccessibilityNode, seen: WeakSet<object>): void {
-  if (typeof node !== "object") {
-    throw new SnapshotError("Accessibility snapshot node must be an object");
-  }
-  if (seen.has(node)) {
-    throw new SnapshotError("Accessibility snapshot contains a cycle");
-  }
-  seen.add(node);
-  if (typeof node.role !== "string" || node.role.trim().length === 0) {
-    throw new SnapshotError("Accessibility snapshot node is missing a role");
-  }
-  if (node.value !== undefined && !isValue(node.value)) {
-    throw new SnapshotError(
-      "Accessibility snapshot value must be a string or a finite number",
-    );
-  }
-  if (node.children !== undefined && !Array.isArray(node.children)) {
-    throw new SnapshotError("Accessibility snapshot children must be an array");
-  }
-}
-
-function isValue(value: string | number): boolean {
-  return (
-    typeof value === "string" ||
-    (typeof value === "number" && Number.isFinite(value))
-  );
 }
 
 function hasText(value: string | undefined): boolean {

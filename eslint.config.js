@@ -8,7 +8,7 @@ const tsconfigRootDir = dirname(fileURLToPath(import.meta.url));
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/coverage/**"],
+    ignores: ["**/dist/**", "**/coverage/**", ".claude/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

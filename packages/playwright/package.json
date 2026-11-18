@@ -36,7 +36,17 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
+  "dependencies": {
+    "@jevyjs/core": "workspace:*",
+    "yaml": "catalog:"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.49.0"
+  },
   "devDependencies": {
-    "typescript": "catalog:"
+    "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

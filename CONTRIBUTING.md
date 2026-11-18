@@ -32,6 +32,8 @@ Signed-off-by: Your Name <you@example.com>
 ## Toolchain
 
 - **Toolchain:** Node >= 22.18, the first 22.x release with type stripping on by default, which `loadConfig` needs for `jevy.config.ts` (`.nvmrc` is 22; CI also runs Node 24), pnpm 10 (the version is pinned in the root `package.json` `packageManager` field), TypeScript, Vitest. From the repo root: `pnpm install`, `pnpm lint`, `pnpm typecheck`, `pnpm build` and `pnpm test`.
+- **Browser tests:** `@jevyjs/playwright` tests run in a real Chromium that matches the pinned Playwright. Install it once with `pnpm --filter @jevyjs/playwright exec playwright install chromium`.
+- **Golden hashes:** if `golden-hash.test.ts` fails because you changed a built-in redaction or normalisation rule on purpose, bump `SNAPSHOT_RULES_VERSION` in `packages/core/src/project.ts` and then regenerate the golden literals. Never regenerate them without the bump, because every user's committed decision cache is keyed on these hashes.
 - **Changesets:** every user-facing change needs a changeset (`pnpm changeset`). A change that only touches the toolchain, and does not change published behaviour, does not. Nothing in this repo publishes to npm automatically.
 - **Publishing:** every package under `packages/` is `"private": true` until the 0.1.0 release, so a stray `pnpm publish` cannot ship them. Changesets can still version them. Remove `"private"` as part of the 0.1.0 release, before the first real publish. Leave `publishConfig.access` set to `"public"`.
 - **Tests:**
