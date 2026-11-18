@@ -197,7 +197,12 @@ function flatten(
 }
 
 type ConfigRead =
-  | { readonly ok: true; readonly entries: ReadonlyMap<string, Entry> }
+  | {
+      readonly ok: true;
+      readonly entries: ReadonlyMap<string, Entry>;
+      /** Normalised code of the file with the config object cut out. */
+      readonly outside: string;
+    }
   | { readonly ok: false; readonly reason: string };
 
 function readJevyConfig(text: string, file: string): ConfigRead {
@@ -215,7 +220,29 @@ function readJevyConfig(text: string, file: string): ConfigRead {
   }
   const entries = new Map<string, Entry>();
   flatten(object, parsed.sourceFile, "", entries);
-  return { ok: true, entries };
+  return {
+    ok: true,
+    entries,
+    outside: normaliseCode(parsed.sourceFile, parsed.sourceFile, object),
+  };
+}
+
+/**
+ * Core's default for `ci.needsReview.pr` (see `readCi` in @jevyjs/core's
+ * config.ts). Removing `pr: "fail"` therefore relaxes it to "warn". The
+ * default for `main` is "fail", so removing that relaxes nothing.
+ */
+const NEEDS_REVIEW_DEFAULTS: Readonly<Record<string, string>> = {
+  "ci.needsReview.pr": '"warn"',
+};
+
+function needsReviewAfter(
+  path: string,
+  after: Entry | undefined,
+): string | null {
+  return after === undefined
+    ? (NEEDS_REVIEW_DEFAULTS[path] ?? null)
+    : after.literal;
 }
 
 function numberOf(entry: Entry | undefined): number | null {
@@ -260,12 +287,14 @@ function classifyEntry(
   if (
     (path === "ci.needsReview.pr" || path === "ci.needsReview.main") &&
     before?.literal === '"fail"' &&
-    after?.literal === '"warn"'
+    needsReviewAfter(path, after) === '"warn"'
   ) {
+    const removed =
+      after === undefined ? ' (removed; the default is "warn")' : "";
     return finding({
       ...shown,
       kind: "needs-review-relaxed",
-      message: `${path} relaxed from "fail" to "warn"`,
+      message: `${path} relaxed from "fail" to "warn"${removed}`,
     });
   }
   const verb =
@@ -351,6 +380,18 @@ export function diffJevyConfig(change: ConfigFileChange): readonly Finding[] {
       reported.add(top);
     }
     out.push(result);
+  }
+  // `{ thresholds }` or `pass: PASS` reads a value defined elsewhere in the
+  // file; the object's own code is unchanged when that value is lowered.
+  if (was.outside !== now.outside) {
+    out.push(
+      finding({
+        file,
+        kind: "config-changed",
+        message:
+          "code outside the config object changed (a constant, import or helper it may read); review it by hand",
+      }),
+    );
   }
   return sortFindings(out);
 }

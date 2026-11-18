@@ -80,6 +80,13 @@ describe("diffTestFile: weakening", () => {
     ]);
   });
 
+  it("matches a renamed test whose body was only re-quoted", () => {
+    const after = BASE.replace("shows the total", "shows the order total")
+      .replace('getByRole("status")', "getByRole('status')")
+      .replace("toBe(42)", "toBe(42.0)");
+    expect(kinds(BASE, after)).toEqual(["test-renamed"]);
+  });
+
   it("still flags a skip on a renamed test", () => {
     const after = BASE.replace(
       'test("shows the total"',

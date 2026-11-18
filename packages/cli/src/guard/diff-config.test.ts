@@ -97,6 +97,49 @@ describe("diffJevyConfig", () => {
     ]);
   });
 
+  it("reports needsReview.pr removed after fail, since the default is warn", () => {
+    const after = JEVY.replace('pr: "fail", ', "");
+    expect(jevy(JEVY, after)).toMatchObject([
+      {
+        kind: "needs-review-relaxed",
+        severity: "weakening",
+        message:
+          'ci.needsReview.pr relaxed from "fail" to "warn" (removed; the default is "warn")',
+      },
+    ]);
+    const noCi = JEVY.replace(
+      '  ci: { needsReview: { pr: "fail", main: "fail" } },\n',
+      "",
+    );
+    expect(kinds(jevy(JEVY, noCi))).toEqual([
+      "config-changed",
+      "needs-review-relaxed",
+    ]);
+  });
+
+  it("reports a change to code the config object reads, outside it", () => {
+    const before =
+      "const PASS = 0.8;\nconst thresholds = { pass: PASS };\nexport default defineConfig({ thresholds });\n";
+    const lowered = before.replace("PASS = 0.8", "PASS = 0.5");
+    expect(jevy(before, lowered)).toMatchObject([
+      {
+        kind: "config-changed",
+        severity: "review",
+        message:
+          "code outside the config object changed (a constant, import or helper it may read); review it by hand",
+      },
+    ]);
+    const helper = before.replace(
+      "const thresholds = { pass: PASS };",
+      "const thresholds = { pass: PASS - 0.3 };",
+    );
+    expect(kinds(jevy(before, helper))).toEqual(["config-changed"]);
+    // Formatting and comments outside the object are still not a change.
+    expect(
+      jevy(before, `// tuned\n${before.replace("PASS = 0.8", "PASS = 0.80")}`),
+    ).toEqual([]);
+  });
+
   it("does not compare a non-literal threshold as a number", () => {
     const after = JEVY.replace("pass: 0.8", "pass: PASS");
     expect(kinds(jevy(JEVY, after))).toEqual(["config-changed"]);
@@ -121,7 +164,19 @@ export default defineConfig({
     const plain = "export default { thresholds: { pass: 0.8 } };";
     const named =
       "const config = { thresholds: { pass: 0.7 } } satisfies JevyConfig;\nexport default config;";
-    expect(kinds(jevy(plain, named))).toEqual(["threshold-lowered"]);
+    // The export itself was restructured, so that is reported for review too.
+    expect(kinds(jevy(plain, named))).toEqual([
+      "config-changed",
+      "threshold-lowered",
+    ]);
+    const renamed = named.replace(/config/g, "settings");
+    expect(kinds(jevy(named, renamed.replace("0.7", "0.6")))).toEqual([
+      "config-changed",
+      "threshold-lowered",
+    ]);
+    expect(kinds(jevy(named, named.replace("pass: 0.7", "pass: 0.6")))).toEqual(
+      ["threshold-lowered"],
+    );
   });
 
   it("reports a config it cannot read for review", () => {

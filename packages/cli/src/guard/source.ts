@@ -95,7 +95,21 @@ function collectTokens(
   node: ts.Node,
   sourceFile: ts.SourceFile,
   out: string[],
+  hole: ts.Node | undefined,
 ): void {
+  if (node === hole) {
+    out.push("\u0000");
+    return;
+  }
+  // Quote style and number spelling are formatting: `'a'` is `"a"`, `0.80` is `0.8`.
+  if (ts.isStringLiteral(node)) {
+    out.push(JSON.stringify(node.text));
+    return;
+  }
+  if (ts.isNumericLiteral(node)) {
+    out.push(String(Number(node.text)));
+    return;
+  }
   const children = node.getChildren(sourceFile);
   if (children.length === 0) {
     const text = node.getText(sourceFile);
@@ -105,21 +119,24 @@ function collectTokens(
     return;
   }
   for (const child of children) {
-    collectTokens(child, sourceFile, out);
+    collectTokens(child, sourceFile, out, hole);
   }
 }
 
 /**
  * The tokens of `node` joined by single spaces. Whitespace, line breaks and
  * comments drop out, so reformatting or commenting code compares equal while
- * any change to the code itself does not.
+ * any change to the code itself does not. A `hole` node, when given, is
+ * replaced by one placeholder: the code around it can then be compared on
+ * its own, as the config diff does for what lies outside the config object.
  */
 export function normaliseCode(
   node: ts.Node,
   sourceFile: ts.SourceFile,
+  hole?: ts.Node,
 ): string {
   const tokens: string[] = [];
-  collectTokens(node, sourceFile, tokens);
+  collectTokens(node, sourceFile, tokens, hole);
   return tokens.join(" ");
 }
 
