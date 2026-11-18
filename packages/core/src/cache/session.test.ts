@@ -880,6 +880,34 @@ describe("createDecisionSession: redaction before write", () => {
     await query.confirm();
     expect(await store.list()).toEqual([]);
   });
+
+  it("returns an abstention's free text redacted, fresh and from the memo", async () => {
+    const memo = createRunMemo();
+    const used = decider({
+      value: "page shows alice@example.com only",
+      confidence: 0.4,
+      abstained: true,
+    });
+    const input = {
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    };
+    const first = await session(new MemoryDecisionStore(), "record", {
+      decider: used,
+      memo,
+    }).decide(input);
+    const again = await session(new MemoryDecisionStore(), "record", {
+      decider: used,
+      memo,
+    }).decide(input);
+    expect(used.calls).toBe(1);
+    for (const outcome of [first, again]) {
+      expect(JSON.stringify(outcome)).not.toContain("alice@");
+      expect(outcome.answer?.value).toBe(first.record?.answer);
+    }
+  });
 });
 
 describe("createDecisionSession: keys", () => {

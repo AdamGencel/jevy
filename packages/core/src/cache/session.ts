@@ -288,7 +288,10 @@ async function decide(
   if (answer === undefined) {
     throw new CacheError("The decider returned no answer");
   }
-  const entry: RunMemoEntry = { answer: copyAnswer(answer), truncated };
+  const entry: RunMemoEntry = {
+    answer: storableAnswer(settings, answer),
+    truncated,
+  };
   const outcome = fromAnswer(settings, input.question, entry, base);
   const record = buildRecord(settings, {
     key,
@@ -401,18 +404,28 @@ interface RecordFields {
 }
 
 /**
- * The spec, step and question were redacted by the caller. The answer is
- * redacted here. An abstention's free text may change; a real answer may
- * not, because a redacted option id or level could never be replayed.
+ * The decider's answer as the session keeps it: redacted once, before it
+ * reaches the memo, the returned outcome or a record, so an abstention's free
+ * text cannot carry a secret out of the session. An abstention's text may
+ * change; a real answer may not, because a redacted option id or level could
+ * never be replayed. `raw` is dropped.
  */
-function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
-  const abstained = fields.answer.abstained === true;
-  const answer = redactText(fields.answer.value, settings.redact);
-  if (!abstained && answer !== fields.answer.value) {
+function storableAnswer(settings: Settings, answer: Answer): Answer {
+  const value = redactText(answer.value, settings.redact);
+  if (answer.abstained !== true && value !== answer.value) {
     throw new CacheError(
       "The decider's answer matches a redaction rule, so it cannot be stored and replayed. Rename the option or level, or narrow the rule.",
     );
   }
+  return {
+    value,
+    confidence: answer.confidence,
+    ...(answer.abstained !== undefined ? { abstained: answer.abstained } : {}),
+  };
+}
+
+/** The spec, step, question and answer were redacted by the caller. */
+function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
   const createdAt = settings.now();
   if (Number.isNaN(createdAt.getTime())) {
     throw new CacheError("The session clock returned an invalid date");
@@ -427,9 +440,9 @@ function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
     snapshotHash: fields.snapshotHash,
     decider: settings.deciderId,
     model: settings.model,
-    answer,
+    answer: fields.answer.value,
     confidence: fields.answer.confidence,
-    abstained,
+    abstained: fields.answer.abstained === true,
     truncated: fields.truncated,
     verdict: fields.verdict,
     thresholds: settings.thresholds,
@@ -477,14 +490,6 @@ function hashOptions(
     redact: settings.redact,
     ...(normalise !== undefined ? { normalise } : {}),
     ...(region !== undefined ? { region } : {}),
-  };
-}
-
-function copyAnswer(answer: Answer): Answer {
-  return {
-    value: answer.value,
-    confidence: answer.confidence,
-    ...(answer.abstained !== undefined ? { abstained: answer.abstained } : {}),
   };
 }
 
