@@ -1,65 +1,110 @@
 # Jevy — Roadmap
 
-Status: **M0 and M1 are done in the repo** (toolchain, plus the `@jevyjs/core` decision layer). M2 onward is not started. Jevy is a personal project with one maintainer (Adam Gencel). All durations are *estimates* assuming roughly full-time work on it; part-time work stretches them proportionally. Each milestone lists its exit criteria. Scope: Playwright only for v0.1; API-level tests and Cypress come later (unscheduled); mobile is not planned.
+Status: **M0 and M1 are done** (toolchain, plus the `@jevyjs/core` decision layer). **Step 1 below is in progress.** Jevy is a personal project with one maintainer (Adam Gencel). This roadmap was re-ordered on 18 Nov 2026; the old milestone numbers are mapped at the end. No step has a date: each one lists what it delivers and how we know it is done.
 
-## v0.1: levels 1 and 2, plus the Web3 wallet pack
+## Direction
 
-The repo contains only the product packages. Demos are recorded videos made outside the repo.
+Jevy is an open-source test framework for a time when coding agents write most of the code and most of the tests. In that setting the scarce thing is not a written test. It is a result you can trust. Five properties follow, and every step below serves at least one of them.
 
-Estimated total: about 6–8 weeks *(estimate)*. This is slightly shorter than before: there is no in-repo example app or fork-compatibility spike, and recording the demos is smaller work.
+1. **Agent-operable.** An agent can install, run and read Jevy without a person: non-interactive commands, stable exit codes, a versioned machine-readable report, and reasons on every non-pass.
+2. **Tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a weakened test, checks that a new cached verdict really came from a model, and does not let an agent approve its own `needs-review`.
+3. **Cheap and repeatable in the loop.** Verdicts are cached in git and replayed with no model call. A relevant change is a miss, not a guess.
+4. **Honest about doubt.** Three verdicts. A weak or cut-off answer is `needs-review`, never a guessed pass or fail.
+5. **Measured.** `eval` reports how often each decider is right on labelled cases before anyone trusts it.
 
-| # | Milestone | Scope | Exit criteria |
+Jevy does not ship its own agent loop. The developer's coding agent does the driving; Jevy gives it tools and guardrails. Playwright is the first runner. Web3 stays first class: wallet prompts, signing policy and chain state use the same decision, cache and guard mechanisms as any other check.
+
+## Steps
+
+### Step 1 — Foundations (in progress)
+
+Five work packages. They do not depend on a model or on the network.
+
+| # | Package | Delivers | Done when |
 |---|---|---|---|
-| M0 | Repo foundation | **Done.** github.com/AdamGencel/jevy; pnpm workspace, TS config, lint, Vitest, Changesets, GitHub Actions, MIT `LICENSE`, DCO sign-off check on PRs, `.gitignore` for `.env*`, these docs | **Done.** `pnpm build && pnpm test` is green in CI on the stub packages; npm org `@jevyjs` created (28 Oct 2026) and placeholder `@jevyjs/cli` 0.0.1 published (28 Oct 2026); public repo created (28 Oct 2026); TypeSafe AI brand check done (27 Oct 2026, see OPEN-QUESTIONS) |
-| M1 | Core | **Done.** `Decider` interface, question/answer/verdict types, snapshot pruning and hashing, normalisation rules, redaction, and the `jevy.config.ts` loader in `@jevyjs/core` | **Done.** Unit tests: the same page hashes the same; a cosmetic change hashes the same; a relevant change hashes differently. Redaction, verdict thresholds, and config loading are covered. No network, no model adapter, and no cache store (those are M3 and M2). |
-| M2 | Decision cache | JSONL store committed to git by default, redaction before write, optional external store for big suites, key scheme (kind, normalised question, option ids, redacted snapshot hash, decider id, model), `replay` / `replay-or-query` / `record` modes, `jevy cache prune` / `stats`. A hit is re-gated before use. `replay` makes no model call. | CI fixture run in `replay` mode makes zero network calls |
-| M2 follow-up | Cache confirmation and replay strictness | Write a cache entry only after a later check in the same test confirms the step. Report why an entry was not used (`model-changed`, `snapshot-changed`, `regated-below-threshold`, `redaction-changed`, or no entry). Add `--strict`, which fails a stale entry as a different outcome from a missing one and still makes no model call, and `jevy cache ls`. Playwright retries reuse the cached verdict for that state and do not call the model again inside the same run (the plugin in M4 must honour this). | An unconfirmed step is not replayed. `--strict` fails a stale entry with no model call, and that failure is distinct from a miss. `jevy cache ls` lists the entry. A retry of an unchanged state does not issue a second decider call. |
-| M3 | Deciders | `deciders-jev` is built on the Vercel AI SDK (`experimental_decide`) with TypeSafe's AI SDK provider (`@ai-sdk/typesafe-ai`). It keeps the pinned `jev-1.14.0`, `TYPESAFE_API_KEY`, the base-URL allow-list and alias rejection. Probability and provider confidence are separate signals: a missing confidence is 0, and a missing probability is not treated as 1. Every question includes an explicit `inconclusive` or `none` option, and that answer maps to `needs-review` even when both signals are high. `deciders-kev` (laptop default `kev-4b@v1.0`, *estimate*; `kev-0.8b@v1.0` for smaller machines), `deciders-llm` (provider-agnostic, user-supplied adapter, structured output and validation), fake decider for tests; per-project and per-test decider selection | Contract test suite passes for all three adapters plus the fake; switching Jev to Kev is a one-line config change; probability and confidence are asserted as separate fields; an `inconclusive` or `none` answer is `needs-review`; Kev-4B runs on a MacBook within an acceptable latency budget (to measure) |
-| M4 | Playwright plugin | `test`/`expect` wrappers over `@playwright/test` (not a new runner), `toSatisfy` with three verdicts, reporter showing `needs-review`, CI policy (warn on PRs, fail on main, configurable). A Playwright retry reuses the cached verdict from the M2 follow-up and does not call the model again in the same run. | Example suite: known-good pages pass, known-bad pages fail, ambiguous pages are `needs-review`. A retry of an unchanged page makes no second decider call. |
-| M5 | Locator repair | Candidate selection on locator failure, unified-diff suggestion in the report and an optional patch file; no source edits | A renamed button produces a correct one-line diff; the test is still reported as failing or `needs-review` |
-| M6 | Recorder (`jevy record`) | LLM planning once, per-step action/element choice, interactive pause on low confidence, spec emission with role-based locators, numeric checks as code assertions | 3 goals on a small fixture app inside the package tests produce specs that pass in `replay` mode and read like hand-written Playwright |
-| M7 | Eval (`jevy eval`) + public dataset | Case schema, metrics (accuracy, TPR/TNR, calibration, latency, cost, repeat variance), threshold suggestion, acceptance-rate tracking for advisory steps (70% bar), markdown/JSON report; label and publish about 200 cases from public apps only (Uniswap interface and others) | Public dataset published in the repo; report comparing Jev, Kev and an LLM is reproducible by anyone; default decider and thresholds chosen from it |
-| M8 | Web3 wallet pack + record demo videos on public web3 sites (Uniswap first) | Runs in parallel with M4–M6. It does not wait on the recorder. Generic pack: prompt classification, code policy, decoded-request checks with viem, mock EIP-1193 driver, user-configured network (local Anvil fork or testnet), mainnet signing refused by default. Then record demo videos outside the repo with Playwright video and trace: Uniswap web app first, in testnet mode (Ethereum Sepolia or Unichain Sepolia) or stopping at the confirm screen with the signature rejected. About 1 week for the pack plus 2–3 days for demos *(estimate)* | Pack: connect, sign and send flows pass against a fixture dApp page on Anvil and replay in CI; a value-moving request outside the policy stops the run; mainnet signing is refused without the explicit flag. Demos: at least one Uniswap video, testnet funds only or signature rejected, with no key visible, ready for the README |
-| M9 | Release 0.1.0 | Docs site or README pass (setup guide for your own app, including web3 wallet, RPC and testnet config), demo videos embedded, npm publish via CI with provenance. Remove `"private": true` from each package before that publish. Before 0.1.0, agent-friendly setup: `jevy init --yes` (non-interactive; local Kev or `replay` mode, with no hosted key required), an agent skill file, a machine-readable `report.json`, and `llms.txt` indexing the markdown docs. An MCP server is not part of this release. | Fresh-machine quickstart for levels 1 and 2 and the web3 config works from the README on a user's own app. `jevy init --yes` finishes without a hosted API key. The skill file, `report.json` and `llms.txt` are in the repo. Open questions 4 and 5 have written answers from TypeSafe recorded in OPEN-QUESTIONS. |
+| 1a | Core contract | `callDecider` reports whether the snapshot was cut. A cut-off snapshot can never produce `fail`. An answer can abstain, and an abstention is `needs-review`. The snapshot hash carries a rules version, with golden-hash tests, and a fingerprint of the project's redaction and normalisation rules. | A rule change that alters a hash fails a test until the version is bumped. |
+| 1b | Pruning and robustness | Pruning keeps alerts, dialogs, status regions and headings longest. The token budget is always met or the call fails. Malformed snapshots raise `SnapshotError`. A redaction or normalisation rule that can never settle is rejected when the config loads. | The findings left open by the first code review are closed with tests. |
+| 1c | Decision cache | Key scheme, record format, JSONL store (one file per spec), `replay` / `replay-or-query` / `record`, re-gating on a hit, a reason on every miss, and writes held until the test confirms the step. | A fixture run in `replay` makes zero decider calls, and every miss names its reason. |
+| 1d | Snapshot source | Current Playwright has no `page.accessibility`. This package turns `ariaSnapshot()` output into the tree core expects, and records what the snapshot does and does not expose (password values, autocomplete). | Round-trip tests on fixture pages in a real browser; a written finding in `docs/spikes/`. |
+| 1e | Guard | `jevy guard --base <ref>` compares tests, config and cached decisions between two commits and reports weakening: removed tests or assertions, added `skip`/`fixme`, loosened statements or thresholds, and approvals added in the diff. No model call. | JSON output with a versioned schema; exit code distinguishes weakening from clean. |
 
-**Order.** M0–M3 come first and in that order. The M2 follow-up lands with M2, before 0.1.0. M4, M5, M6 and the Web3 pack (M8) proceed in parallel. M8 does not wait on the recorder. Its demo videos are recorded once the pack can drive a fixture. M7 should start early because it decides the default decider. M9, including the agent-friendly setup, is the 0.1.0 release. An MCP server comes after 0.1.0.
+### Step 2 — First end-to-end slice
 
-## v0.2: properties, invariants and triage
+- `@jevyjs/deciders-llm`: `llmDecider` over a user-supplied adapter, with structured output, validation, an explicit abstain option, and a compact snapshot format for the prompt. A published fake decider for tests.
+- `@jevyjs/playwright`: `expect(page | locator).toSatisfy(statement)` on `@playwright/test`, using 1a–1d. Locator-scoped by default in the docs.
+- `report.json` v1: verdict, source (cache or decider), miss reason, truncation, decider and model, per assertion.
+- Done when: a fixture app passes, fails and returns `needs-review` as expected; a second run in `replay` makes no decider call; an agent can act on `report.json` alone.
 
-Estimated at about 6–8 weeks *(estimate)*.
+### Step 3 — Measure the two risky assumptions
 
-- **`jevy properties propose`.** An LLM proposes properties in plain English from types, docs and NatSpec, then translates them to fast-check.
-- **Mutation and seeded-bug filter for TypeScript.** Keep a property only if it compiles, passes on current code and kills at least one mutant. The mutation tool is still to be chosen; Stryker is a candidate *(suggestion, not yet evaluated)*.
-- **Solidity.** Generate a Chimera-style shared suite that runs in Foundry for PRs and Echidna/Medusa nightly, invoked as external binaries. Seeds are stored for replay.
-- **Ranking.** A decider ranks surviving properties for review. Humans accept or reject them.
-- **Failure triage.** Classify failing tests as app bug, flaky test, environment or data, gated on confidence and evaluated with `eval`.
-- **Pilots (public, shareable):**
-  - viem (TypeScript, fast-check): round-trip properties such as ABI encode/decode, sign/recover and transaction serialize/parse.
-  - OpenZeppelin Contracts (Solidity, Foundry plus Echidna/Medusa): token and access-control invariants.
-  - Results and surviving properties are published. Upstream contributions go only through each project's normal process.
-  - Exit criterion: at least one surviving property per pilot that would plausibly be accepted upstream *(target, not a promise)*.
-- **Advisory steps** (triage, property ranking) stay on only if at least 70% of their findings are accepted.
+- **Hash stability.** Snapshot three real apps repeatedly over several days and report how often the hash of an unchanged page changes, per page and per region.
+- **Judge accuracy.** About 30 hand-labelled cases through the LLM decider: accuracy, `needs-review` rate, and how often a confident answer is wrong.
+- Needs network access and a model key. It decides whether whole-page hashing is usable or whether hashing must be scoped to the evidence the decider used.
+- Done when: both numbers are written up, with a go or change decision for the cache key.
 
-## v0.3: Web3 depth and wider coverage
+### Step 4 — Integrity
 
-Estimated at about 6–10 weeks *(estimate)*.
+- `jevy cache verify`: in a trusted CI job, re-ask the decider about records added or changed in the pull request, and fail on disagreement. Unchanged records still cost nothing.
+- Approvals an agent cannot grant itself: `reviewedBy` is honoured only when the commit that adds it passes a project-defined check (for example CODEOWNERS on the cache directory).
+- `jevy guard` runs in CI by default, next to the tests.
+- Done when: a forged `pass` record and a quietly deleted assertion both fail CI in a fixture repo.
 
-- **ERC-4337 helpers.** UserOp building and assertion, paymaster and session-key flows, and bundler receipts checked in code.
-- **Real-extension wallet driver** for smoke tests (MetaMask, Rabby), with xvfb guidance for CI.
-- **Nightly exploratory run** (optional, advisory only). An agent explores the app and files `needs-review` findings for human triage; never a merge gate. It stays on only if at least 70% of its findings are accepted as real.
-- **Vision fallback** for canvas and iframe-heavy UIs, gated behind a flag. This depends on Jev images leaving preview, or on a VLM adapter.
-- **Optional pre-deployment AI audit hook** for contracts, as triage before a human audit, with its output treated as advisory.
-- **Public benchmark** of Jevy deciders on an open labelled set, with reproducible eval reports.
+### Step 5 — Eval and more deciders
+
+- `jevy eval`: case schema, accuracy, true positive and true negative rates, calibration, latency, cost, repeat variance, and suggested thresholds.
+- `deciders-jev` and `deciders-kev` as optional adapters. The generic LLM adapter stays the default path, because everyone can run it.
+- Public seed dataset, subject to the licensing question in OPEN-QUESTIONS.
+- Done when: the report is reproducible by someone without a Jev key.
+
+### Step 6 — Agent surface
+
+- A skill file and `llms.txt` so a coding agent can set Jevy up and use it correctly.
+- `jevy init --yes`: non-interactive, no hosted key required.
+- An MCP server exposing: run a check, read the report, explain a miss, list candidates for a broken locator, propose a repair as a diff. Recording a new flow and repairing a locator are done by the developer's agent through these tools, under the guard. Jevy does not run its own planner.
+- Done when: an agent with only the skill file adds a `toSatisfy` check to a fixture suite and gets it green without weakening anything the guard watches.
+
+### Step 7 — Web3 wallet pack
+
+- Prompt classification, signing policy in code, decoded-request checks with viem, mock EIP-1193 driver, user-configured fork or testnet, mainnet signing refused by default.
+- Built on the same pieces: a wallet prompt is a state, its classification is a cached decision, the policy file is watched by the guard.
+- Done when: connect, sign and send pass against a fixture dApp on Anvil and replay in CI; a value-moving request outside the policy stops the run.
+
+### Step 8 — Tests that prove they test something
+
+- A mutation gate: a new or changed test must fail on at least one mutant of the code it covers. This is the check on agent-written tests.
+- Property and invariant generation (fast-check; Foundry, Echidna and Medusa as external binaries), kept only when the property compiles, passes, and kills a mutant.
+- Failure triage as an advisory step, held to the 70% acceptance bar.
+
+### Step 9 — Release 0.1.0
+
+- Setup guide, demo videos, npm publish with provenance, `"private": true` removed.
+- Open questions 4 and 5 have written answers from TypeSafe recorded in OPEN-QUESTIONS.
+
+Steps 1–4 run in order. Steps 5, 6 and 7 can run in parallel after step 2. Step 8 can start once step 2 is done.
 
 ## Later or unscheduled
 
-- API-level tests and a Cypress adapter (planned for after v0.3; not scheduled).
+- A Vitest matcher on the same core, for API responses, CLI output and other non-page states.
+- API-level tests and a Cypress adapter.
+- ERC-4337 helpers, a real-extension wallet driver, a vision fallback.
+- Nightly exploratory runs, advisory only.
 - Mobile: **not planned.**
-- An MCP server, after 0.1.0. It is not part of the M9 release. `jevy init --yes`, the skill file, `report.json` and `llms.txt` are.
-- Additional deciders.
-- Solidity mutation tooling.
-- An IDE helper for reviewing `needs-review` items.
+
+## Old milestone numbers
+
+| Old | Now |
+|---|---|
+| M0 foundation, M1 core | Done |
+| M2 decision cache, M2 follow-up | Step 1c, step 4 |
+| M3 deciders | Step 2 (LLM, fake), step 5 (Jev, Kev) |
+| M4 Playwright plugin | Step 2 |
+| M5 locator repair, M6 recorder | Step 6, as tools for the developer's agent |
+| M7 eval and dataset | Step 3 (first measurement), step 5 |
+| M8 Web3 wallet pack and demos | Step 7 |
+| M9 release 0.1.0 | Step 9 |
+| v0.2 properties and triage | Step 8 |
+| v0.3 Web3 depth | Later |
 
 ## Tracking
 
-Each milestone becomes a GitHub milestone with issues. Changes to this roadmap go through PRs.
+Each step becomes a GitHub milestone with issues. Changes to this roadmap go through PRs.
