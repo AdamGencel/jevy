@@ -277,7 +277,7 @@ function shortenRoot(
   }
   if (fits(current)) return current;
   throw new SnapshotError(
-    `The snapshot root does not fit the budget of ${String(maxTokens)} tokens, even with every other node and its text removed (it needs ${String(estimateSnapshotTokens(current))})`,
+    `The snapshot root does not fit the budget of ${String(maxTokens)} tokens, even with every other node removed and its name, description, valuetext, string value and roledescription dropped (it needs ${String(estimateSnapshotTokens(current))})`,
   );
 }
 

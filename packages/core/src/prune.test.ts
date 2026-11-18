@@ -386,6 +386,13 @@ describe("the token budget is always met, or pruning fails", () => {
     expect(() =>
       pruneSnapshot({ role: "r".repeat(400) }, { maxTokens: 20 }),
     ).toThrow(SnapshotError);
+    // A field that is not shortened must not be described as removed.
+    expect(() =>
+      pruneSnapshot(
+        { role: "textbox", invalid: "x".repeat(400) },
+        { maxTokens: 20 },
+      ),
+    ).toThrow(/name, description, valuetext, string value and roledescription/);
   });
 
   it("validates the budgets", () => {
@@ -405,6 +412,11 @@ describe("the token budget is always met, or pruning fails", () => {
     for (const [options, message] of bad) {
       expect(() => pruneSnapshot(tree, options)).toThrow(SnapshotError);
       expect(() => pruneSnapshot(tree, options)).toThrow(message);
+    }
+    for (const keepRoles of ["alert", [3], { 0: "alert" }]) {
+      const options = { keepRoles } as unknown as PruneOptions;
+      expect(() => pruneSnapshot(tree, options)).toThrow(SnapshotError);
+      expect(() => pruneSnapshot(tree, options)).toThrow(/keepRoles/);
     }
     expect(
       pruneSnapshot(tree, { maxNodes: 1, maxDepth: 0, maxTokens: 4 }),
