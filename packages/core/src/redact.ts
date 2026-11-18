@@ -3,6 +3,7 @@ import { RedactionError } from "./errors.js";
 import { collapseWhitespace, isRecord } from "./guards.js";
 import type { AccessibilityNode } from "./snapshot.js";
 import type { WalletContext } from "./decider.js";
+import { validateSnapshot } from "./validate.js";
 
 /** Stable replacement. Two different secrets in the same place hash the same. */
 export const REDACTED = "[REDACTED]";
@@ -145,13 +146,15 @@ export function redactText(
 /**
  * Copy a snapshot with secrets and direct personal data removed.
  * Structural fields (role, checked, disabled, …) are kept.
+ * A malformed, cyclic or too-deep snapshot throws `SnapshotError` before any
+ * text is read. A node object used in two places is redacted in both.
  */
 export function redactSnapshot(
   snapshot: AccessibilityNode,
   rules: readonly RedactRule[] = [],
 ): AccessibilityNode {
-  const seen = new WeakSet();
-  return redactSplitSeedPhrases(redactNode(snapshot, rules, seen));
+  validateSnapshot(snapshot);
+  return redactSplitSeedPhrases(redactNode(snapshot, rules));
 }
 
 type SeedField = "name" | "description" | "value" | "valuetext";
@@ -319,21 +322,11 @@ function isWalletSecretKey(key: string): boolean {
   return false;
 }
 
+/** Assumes `node` has passed `validateSnapshot`. */
 function redactNode(
   node: AccessibilityNode,
   rules: readonly RedactRule[],
-  seen: WeakSet<object>,
 ): AccessibilityNode {
-  if (typeof node !== "object") {
-    throw new RedactionError(
-      "Cannot redact a snapshot node that is not an object",
-    );
-  }
-  if (seen.has(node)) {
-    throw new RedactionError("Cannot redact a cyclic accessibility snapshot");
-  }
-  seen.add(node);
-
   const roleRule = matchingRoleRule(node, rules);
   const secret = isSecretField(node) || roleRule !== undefined;
   const replacement = roleRule?.replacement ?? REDACTED;
@@ -398,9 +391,7 @@ function redactNode(
     next.valuetext = secret ? replacement : redactText(node.valuetext, rules);
   }
   if (node.children !== undefined) {
-    next.children = node.children.map((child) =>
-      redactNode(child, rules, seen),
-    );
+    next.children = node.children.map((child) => redactNode(child, rules));
   }
   return next;
 }
