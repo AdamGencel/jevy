@@ -368,9 +368,7 @@ describe("snapshotAccessibility: content", () => {
   });
 
   it("reads names that Playwright prints unquoted between slashes", async () => {
-    await page.setContent(
-      `<button>/</button><button>/api/</button>`,
-    );
+    await page.setContent(`<button>/</button><button>/api/</button>`);
     expect(await snapshotAccessibility(page)).toEqual({
       role: "document",
       children: [
