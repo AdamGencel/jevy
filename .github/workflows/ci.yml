@@ -33,4 +33,5 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
+      - run: pnpm --filter @jevyjs/playwright exec playwright install --with-deps chromium
       - run: pnpm test
