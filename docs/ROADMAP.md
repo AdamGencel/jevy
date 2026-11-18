@@ -1,6 +1,6 @@
 # Jevy — Roadmap
 
-Status: **M0 and M1 are done** (toolchain, plus the `@jevyjs/core` decision layer). **Step 1 below is in progress.** Jevy is a personal project with one maintainer (Adam Gencel). This roadmap was re-ordered on 18 Nov 2026; the old milestone numbers are mapped at the end. No step has a date: each one lists what it delivers and how we know it is done.
+Status: **M0, M1 and step 1 are done** (toolchain, the `@jevyjs/core` decision layer, and the five foundation packages). **Step 2 is next.** Jevy is a personal project with one maintainer (Adam Gencel). This roadmap was re-ordered on 18 Nov 2026; the old milestone numbers are mapped at the end. No step has a date: each one lists what it delivers and how we know it is done.
 
 ## Direction
 
@@ -16,9 +16,9 @@ Jevy does not ship its own agent loop. The developer's coding agent does the dri
 
 ## Steps
 
-### Step 1 — Foundations (in progress)
+### Step 1 — Foundations (done, 18 Nov 2026)
 
-Five work packages. They do not depend on a model or on the network.
+Five work packages. They do not depend on a model or on the network. Each was built and then reviewed independently; what they decided is in DESIGN.md §6 and §12.
 
 | # | Package | Delivers | Done when |
 |---|---|---|---|
@@ -27,6 +27,12 @@ Five work packages. They do not depend on a model or on the network.
 | 1c | Decision cache | Key scheme, record format, JSONL store (one file per spec), `replay` / `replay-or-query` / `record`, re-gating on a hit, a reason on every miss, and writes held until the test confirms the step. | A fixture run in `replay` makes zero decider calls, and every miss names its reason. |
 | 1d | Snapshot source | Current Playwright has no `page.accessibility`. This package turns `ariaSnapshot()` output into the tree core expects, and records what the snapshot does and does not expose (password values, autocomplete). | Round-trip tests on fixture pages in a real browser; a written finding in `docs/spikes/`. |
 | 1e | Guard | `jevy guard --base <ref>` compares tests, config and cached decisions between two commits and reports weakening: removed tests or assertions, added `skip`/`fixme`, loosened statements or thresholds, and approvals added in the diff. No model call. | JSON output with a versioned schema; exit code distinguishes weakening from clean. |
+
+Carried into step 2 from the reviews:
+
+- **Cache.** Whether a key should be scoped to its spec, and how a retry that passes on a remembered answer gets its record written.
+- **Snapshot.** A link's URL is not in the tree, so a link that points somewhere new does not change the hash. A password field switched to plain text by a "show password" control is not recognised as secret.
+- **Guard.** A merge-base option, configurable test globs, and reading the cache directory from the config.
 
 ### Step 2 — First end-to-end slice
 
