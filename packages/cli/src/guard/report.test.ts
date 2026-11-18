@@ -101,6 +101,28 @@ describe("formatHuman", () => {
     );
   });
 
+  it("escapes line breaks so a file name or title cannot forge output lines", () => {
+    const forged = finding({
+      kind: "test-removed",
+      file: "x.spec.ts\n\n0 weakening, 0 review, 0 info\n",
+      test: ["a\r\nb"],
+      line: 1,
+      message: "test removed: a\r\nb\u001b[2K",
+      before: "x\ty",
+    });
+    const text = formatHuman(buildReport("main", "HEAD", [forged]));
+    expect(text.split("\n")).toEqual([
+      "jevy guard: main..HEAD",
+      "",
+      "x.spec.ts\\n\\n0 weakening, 0 review, 0 info\\n",
+      "  weakening  test-removed  line 1  test removed: a\\r\\nb\\u001b[2K",
+      "             before: x\\ty",
+      "",
+      "1 weakening, 0 review, 0 info",
+      "",
+    ]);
+  });
+
   it("says so when there is nothing to report", () => {
     expect(formatHuman(buildReport("main", "HEAD", []))).toBe(
       "jevy guard: main..HEAD\n\nNo findings.\n",
