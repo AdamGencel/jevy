@@ -1,3 +1,4 @@
+import { SnapshotError } from "./errors.js";
 import { estimateSnapshotTokens } from "./hash.js";
 import { projectSnapshot } from "./project.js";
 import type { SnapshotProcessOptions } from "./project.js";
@@ -24,11 +25,32 @@ export function snapshotTokenBudget(deciderId: string | undefined): number {
     : DEFAULT_SNAPSHOT_TOKEN_BUDGET;
 }
 
+/**
+ * Roles kept for as long as the budget allows. An error banner, a dialog, a
+ * status message or a heading is what a question about a page is most often
+ * about, and removing one silently changes the answer.
+ */
+export const DEFAULT_KEEP_ROLES: readonly string[] = [
+  "alert",
+  "alertdialog",
+  "dialog",
+  "status",
+  "heading",
+];
+
 export interface PruneOptions extends SnapshotProcessOptions {
+  /** At least 1: the root always stays. */
   readonly maxNodes?: number;
+  /** At least 0. The root is depth 0. */
   readonly maxDepth?: number;
+  /** A finite number above 0. */
   readonly maxTokens?: number;
   readonly deciderId?: string;
+  /**
+   * Replaces `DEFAULT_KEEP_ROLES`. `[]` protects nothing, which gives the
+   * plain deepest-first, latest-first order.
+   */
+  readonly keepRoles?: readonly string[];
 }
 
 export interface PrunedSnapshot {
@@ -41,12 +63,19 @@ export interface PrunedSnapshot {
 /**
  * Shrink a snapshot deterministically.
  *
- * Depth is cut first (root is depth 0). Then, while the tree is over the
- * node or token budget, the deepest leaf is removed. Ties go to the
- * rightmost path, so earlier content survives. The root is never removed.
- * The removal order is fixed up front, so this runs in O(n log n).
- * If the root alone is over the token budget, its name is shortened.
- * `truncated` is not part of the snapshot hash.
+ * Depth is cut first (root is depth 0), for every node. Then, while the tree
+ * is over the node or token budget, nodes are removed in a fixed order. A
+ * node is protected when it has one of `keepRoles`, sits inside such a node,
+ * or contains one. Every unprotected node goes before any protected one;
+ * within each group the deepest goes first, and ties go to the one latest in
+ * document order, so earlier content survives. The root is never removed.
+ * The order is fixed up front, so this runs in O(n log n).
+ *
+ * If the root alone is still over the token budget, its text is shortened:
+ * name, then description, valuetext, a string value and roledescription,
+ * each dropped entirely before the next is touched. If even the bare root
+ * does not fit, `SnapshotError` is thrown: a result over budget is never
+ * returned. `truncated` is not part of the snapshot hash.
  */
 export function pruneSnapshot(
   snapshot: AccessibilityNode,
@@ -56,12 +85,15 @@ export function pruneSnapshot(
   const maxDepth = options?.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxTokens =
     options?.maxTokens ?? snapshotTokenBudget(options?.deciderId);
+  const keepRoles = options?.keepRoles ?? DEFAULT_KEEP_ROLES;
+  assertBudgets(maxNodes, maxDepth, maxTokens, keepRoles);
+
   let tree = projectSnapshot(snapshot, options);
   const cut = cutDepth(tree, 0, maxDepth);
   tree = cut.node;
   let truncated = cut.truncated;
 
-  const order = removalOrder(tree);
+  const order = removalOrder(tree, new Set(keepRoles));
   const total = order.length + 1;
   const fits = (candidate: AccessibilityNode, count: number): boolean =>
     count <= maxNodes && estimateSnapshotTokens(candidate) <= maxTokens;
@@ -95,6 +127,35 @@ export function pruneSnapshot(
   };
 }
 
+function assertBudgets(
+  maxNodes: number,
+  maxDepth: number,
+  maxTokens: number,
+  keepRoles: readonly string[],
+): void {
+  if (!Number.isInteger(maxNodes) || maxNodes < 1) {
+    throw new SnapshotError(
+      `maxNodes must be an integer of at least 1, got ${String(maxNodes)}`,
+    );
+  }
+  if (!Number.isInteger(maxDepth) || maxDepth < 0) {
+    throw new SnapshotError(
+      `maxDepth must be an integer of at least 0, got ${String(maxDepth)}`,
+    );
+  }
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    throw new SnapshotError(
+      `maxTokens must be a finite number above 0, got ${String(maxTokens)}`,
+    );
+  }
+  if (
+    !Array.isArray(keepRoles) ||
+    !keepRoles.every((role) => typeof role === "string")
+  ) {
+    throw new SnapshotError("keepRoles must be an array of role strings");
+  }
+}
+
 function cutDepth(
   node: AccessibilityNode,
   depth: number,
@@ -115,25 +176,57 @@ function cutDepth(
 }
 
 /**
- * Every non-root node in the order the budget removes it: deepest first, and
- * among equal depths the one latest in document order. A node always comes
- * after its descendants, so removing any prefix of this order leaves a tree,
- * and the node removed at each step is a leaf at that point.
+ * Every non-root node in the order the budget removes it: unprotected nodes
+ * before protected ones, then deepest first, then the one latest in document
+ * order.
+ *
+ * A node always comes after its descendants, so removing any prefix of this
+ * order leaves a tree, and the node removed at each step is a leaf at that
+ * point. Within one group a descendant is deeper, so it sorts first. Across
+ * groups, an unprotected node has no protected descendant: such a descendant
+ * would have a keep role, sit inside a keep-role node, or contain one, and
+ * each of those would make the unprotected node an ancestor of a keep-role
+ * node, or a node inside one, and so protected too.
  */
-function removalOrder(root: AccessibilityNode): AccessibilityNode[] {
-  const nodes: { node: AccessibilityNode; depth: number; index: number }[] = [];
-  const visit = (node: AccessibilityNode, depth: number): void => {
+function removalOrder(
+  root: AccessibilityNode,
+  keepRoles: ReadonlySet<string>,
+): AccessibilityNode[] {
+  const nodes: {
+    node: AccessibilityNode;
+    depth: number;
+    index: number;
+    protected: boolean;
+  }[] = [];
+  /** Returns whether the subtree at `node` contains a keep-role node. */
+  const visit = (
+    node: AccessibilityNode,
+    depth: number,
+    insideKeep: boolean,
+  ): boolean => {
+    const keep = keepRoles.has(node.role);
+    let containsKeep = keep;
     for (const child of node.children ?? []) {
-      nodes.push({ node: child, depth: depth + 1, index: nodes.length });
-      visit(child, depth + 1);
+      const entry = {
+        node: child,
+        depth: depth + 1,
+        index: nodes.length,
+        protected: false,
+      };
+      nodes.push(entry);
+      const childContainsKeep = visit(child, depth + 1, insideKeep || keep);
+      entry.protected = insideKeep || keep || childContainsKeep;
+      containsKeep = containsKeep || childContainsKeep;
     }
+    return containsKeep;
   };
-  visit(root, 0);
-  nodes.sort((left, right) =>
-    left.depth !== right.depth
+  visit(root, 0, false);
+  nodes.sort((left, right) => {
+    if (left.protected !== right.protected) return left.protected ? 1 : -1;
+    return left.depth !== right.depth
       ? right.depth - left.depth
-      : right.index - left.index,
-  );
+      : right.index - left.index;
+  });
   return nodes.map((entry) => entry.node);
 }
 
@@ -152,20 +245,62 @@ function removeFirst(
   return rebuild(root);
 }
 
+/** Root text fields, in the order they give way to the budget. */
+type RootTextField =
+  "name" | "description" | "valuetext" | "value" | "roledescription";
+
+const ROOT_TEXT_FIELDS: readonly RootTextField[] = [
+  "name",
+  "description",
+  "valuetext",
+  "value",
+  "roledescription",
+];
+
+/**
+ * Fit a childless root into `maxTokens` by shortening its text, one field at
+ * a time. A field is cut to the longest prefix that fits; if no prefix fits,
+ * it is dropped and the next field is tried. A numeric value is left alone.
+ */
 function shortenRoot(
   node: AccessibilityNode,
   maxTokens: number,
 ): AccessibilityNode {
-  const name = node.name;
-  if (name === undefined || name.length === 0) return node;
-  let low = 0;
-  let high = name.length;
-  let best = withoutName(node);
+  const fits = (candidate: AccessibilityNode): boolean =>
+    estimateSnapshotTokens(candidate) <= maxTokens;
+  let current = node;
+  for (const field of ROOT_TEXT_FIELDS) {
+    if (fits(current)) return current;
+    const text = current[field];
+    if (typeof text !== "string") continue;
+    current = shortenField(current, field, text, fits);
+  }
+  if (fits(current)) return current;
+  throw new SnapshotError(
+    `The snapshot root does not fit the budget of ${String(maxTokens)} tokens, even with every other node and its text removed (it needs ${String(estimateSnapshotTokens(current))})`,
+  );
+}
+
+/**
+ * The longest prefix of `text` that fits, or the node without the field.
+ * Token cost grows with prefix length, so a binary search finds it.
+ */
+function shortenField(
+  node: AccessibilityNode,
+  field: RootTextField,
+  text: string,
+  fits: (candidate: AccessibilityNode) => boolean,
+): AccessibilityNode {
+  const without = omitKey(node, field);
+  let best = without;
+  let low = 1;
+  let high = text.length;
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
+    const prefix = prefixOf(text, mid);
     const candidate =
-      mid === 0 ? withoutName(node) : withName(node, name.slice(0, mid));
-    if (estimateSnapshotTokens(candidate) <= maxTokens) {
+      prefix.length === 0 ? without : { ...without, [field]: prefix };
+    if (fits(candidate)) {
       best = candidate;
       low = mid + 1;
     } else {
@@ -175,12 +310,20 @@ function shortenRoot(
   return best;
 }
 
-function withoutChildren(node: AccessibilityNode): AccessibilityNode {
-  return omitKey(node, "children");
+/**
+ * The first `length` UTF-16 units of `text`, one shorter if that would end
+ * on half a surrogate pair. A lone surrogate is escaped as six characters in
+ * JSON, which would break the monotone cost the binary search relies on, and
+ * would put a broken character in front of the decider.
+ */
+function prefixOf(text: string, length: number): string {
+  const last = text.charCodeAt(length - 1);
+  const splitsPair = last >= 0xd800 && last <= 0xdbff;
+  return text.slice(0, splitsPair ? length - 1 : length);
 }
 
-function withoutName(node: AccessibilityNode): AccessibilityNode {
-  return omitKey(node, "name");
+function withoutChildren(node: AccessibilityNode): AccessibilityNode {
+  return omitKey(node, "children");
 }
 
 function omitKey(
@@ -190,10 +333,6 @@ function omitKey(
   const copy: AccessibilityNode = { ...node };
   Reflect.deleteProperty(copy, key);
   return copy;
-}
-
-function withName(node: AccessibilityNode, name: string): AccessibilityNode {
-  return { ...withoutName(node), name };
 }
 
 function withChildren(

@@ -23,7 +23,12 @@ function messageOf(run: () => unknown): string {
 
 const ENTRY_POINTS: readonly [string, (node: AccessibilityNode) => unknown][] =
   [
-    ["validateSnapshot", (node) => validateSnapshot(node)],
+    [
+      "validateSnapshot",
+      (node) => {
+        validateSnapshot(node);
+      },
+    ],
     ["redactSnapshot", (node) => redactSnapshot(node)],
     ["normaliseSnapshot", (node) => normaliseSnapshot(node)],
     ["hashSnapshot", (node) => hashSnapshot(node)],
@@ -31,14 +36,14 @@ const ENTRY_POINTS: readonly [string, (node: AccessibilityNode) => unknown][] =
 
 describe("snapshot validation", () => {
   it("accepts a well-formed tree", () => {
-    expect(() =>
+    expect(() => {
       validateSnapshot({
         role: "main",
         name: "Checkout",
         value: 3,
         children: [{ role: "textbox", value: "x", autocomplete: "email" }],
-      }),
-    ).not.toThrow();
+      });
+    }).not.toThrow();
   });
 
   const cases: readonly [string, unknown, RegExp][] = [
@@ -111,9 +116,9 @@ describe("snapshot validation", () => {
   }
 
   it("treats an explicitly undefined field as absent", () => {
-    expect(() =>
-      validateSnapshot({ role: "button", name: undefined }),
-    ).not.toThrow();
+    expect(() => {
+      validateSnapshot({ role: "button", name: undefined });
+    }).not.toThrow();
   });
 
   it("raises SnapshotError, not TypeError, for the null child that used to crash", () => {
@@ -131,7 +136,9 @@ describe("shared nodes, cycles and depth", () => {
       children: [shared, { role: "group", name: "g", children: [shared] }],
     };
     const copy = structuredClone(tree);
-    expect(() => validateSnapshot(tree)).not.toThrow();
+    expect(() => {
+      validateSnapshot(tree);
+    }).not.toThrow();
     expect(redactSnapshot(tree)).toEqual(redactSnapshot(copy));
     expect(normaliseSnapshot(tree)).toEqual(normaliseSnapshot(copy));
     expect(hashSnapshot(tree)).toBe(hashSnapshot(copy));
@@ -142,7 +149,10 @@ describe("shared nodes, cycles and depth", () => {
       role: "group",
       children: [],
     };
-    const tree = { role: "main", children: [{ role: "list", children: [loop] }] };
+    const tree = {
+      role: "main",
+      children: [{ role: "list", children: [loop] }],
+    };
     loop.children.push(tree);
     for (const [, entry] of ENTRY_POINTS) {
       expect(messageOf(() => entry(malformed(tree)))).toMatch(
@@ -162,10 +172,14 @@ describe("shared nodes, cycles and depth", () => {
 
   it("accepts a tree exactly MAX_SNAPSHOT_DEPTH deep and rejects one deeper", () => {
     expect(MAX_SNAPSHOT_DEPTH).toBe(512);
-    expect(() => validateSnapshot(chain(MAX_SNAPSHOT_DEPTH))).not.toThrow();
+    expect(() => {
+      validateSnapshot(chain(MAX_SNAPSHOT_DEPTH));
+    }).not.toThrow();
     expect(() => hashSnapshot(chain(MAX_SNAPSHOT_DEPTH))).not.toThrow();
     expect(
-      messageOf(() => validateSnapshot(chain(MAX_SNAPSHOT_DEPTH + 1))),
+      messageOf(() => {
+        validateSnapshot(chain(MAX_SNAPSHOT_DEPTH + 1));
+      }),
     ).toMatch(/deeper than 512/);
   });
 
@@ -186,7 +200,9 @@ describe("shared nodes, cycles and depth", () => {
       node = { role: "group", children: [node, node] };
     }
     const started = performance.now();
-    expect(() => validateSnapshot(node)).not.toThrow();
+    expect(() => {
+      validateSnapshot(node);
+    }).not.toThrow();
     expect(performance.now() - started).toBeLessThan(500);
   });
 
@@ -198,7 +214,11 @@ describe("shared nodes, cycles and depth", () => {
       role: "main",
       children: [tail, wrap(tail, 300)],
     };
-    expect(messageOf(() => validateSnapshot(tree))).toMatch(/deeper than 512/);
+    expect(
+      messageOf(() => {
+        validateSnapshot(tree);
+      }),
+    ).toMatch(/deeper than 512/);
   });
 });
 

@@ -86,7 +86,10 @@ function visit(value: unknown, depth: number, walk: Walk): number {
   return height;
 }
 
-function checkFields(node: Readonly<Record<string, unknown>>, walk: Walk): void {
+function checkFields(
+  node: Readonly<Record<string, unknown>>,
+  walk: Walk,
+): void {
   const role = node["role"];
   if (typeof role !== "string" || role.trim().length === 0) {
     throw problem(walk, "has no role: role must be a non-empty string");
