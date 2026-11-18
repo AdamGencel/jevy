@@ -90,6 +90,8 @@ export type { PreparedDecisionState } from "./prepare.js";
 export type { DecisionResult } from "./prepare.js";
 export type { GateContext } from "./verdict.js";
 
+export * from "./cache/index.js";
+
 export {
   CONFIG_FILENAMES,
   DEFAULT_CACHE_DIR,
