@@ -1,10 +1,10 @@
 # Jevy — Roadmap
 
-Status: **M0, M1 and step 1 are done** (toolchain, the `@jevyjs/core` decision layer, and the five foundation packages). **Step 2 is next.** Jevy is a personal project with one maintainer (Adam Gencel). This roadmap was re-ordered on 18 Nov 2026; the old milestone numbers are mapped at the end. No step has a date: each one lists what it delivers and how we know it is done.
+Status: **the toolchain and step 1 are done. Step 2 is next.** Jevy is a personal project with one maintainer (Adam Gencel). No step has a date: each one lists what it delivers and how we know it is done.
 
 ## Direction
 
-Jevy is an open-source test framework for a time when coding agents write most of the code and most of the tests. In that setting the scarce thing is not a written test. It is a result you can trust. Five properties follow, and every step below serves at least one of them.
+Jevy is an open-source test framework for the AI era: a time when coding agents write most of the code and most of the tests. In that setting the scarce thing is not a written test. It is a result you can trust. Five properties follow, and every step below serves at least one of them.
 
 1. **Agent-operable.** An agent can install, run and read Jevy without a person: non-interactive commands, stable exit codes, a versioned machine-readable report, and reasons on every non-pass.
 2. **Tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a weakened test, checks that a new cached verdict really came from a model, and does not let an agent approve its own `needs-review`.
@@ -18,7 +18,7 @@ Jevy does not ship its own agent loop. The developer's coding agent does the dri
 
 ### Step 1 — Foundations (done, 18 Nov 2026)
 
-Five work packages. They do not depend on a model or on the network. Each was built and then reviewed independently; what they decided is in DESIGN.md §6 and §12.
+Five work packages. They do not depend on a model or on the network. Each was built and then reviewed independently; what they built is described in DESIGN.md §5 to §7.
 
 | # | Package | Delivers | Done when |
 |---|---|---|---|
@@ -53,12 +53,13 @@ Carried into step 2 from the reviews:
 - `jevy cache verify`: in a trusted CI job, re-ask the decider about records added or changed in the pull request, and fail on disagreement. Unchanged records still cost nothing.
 - Approvals an agent cannot grant itself: `reviewedBy` is honoured only when the commit that adds it passes a project-defined check (for example CODEOWNERS on the cache directory).
 - `jevy guard` runs in CI by default, next to the tests.
+- Cache housekeeping: `jevy cache ls`, `prune` and `stats`. Records are append-only, so superseded ones accumulate.
 - Done when: a forged `pass` record and a quietly deleted assertion both fail CI in a fixture repo.
 
 ### Step 5 — Eval and more deciders
 
 - `jevy eval`: case schema, accuracy, true positive and true negative rates, calibration, latency, cost, repeat variance, and suggested thresholds.
-- `deciders-jev` and `deciders-kev` as optional adapters. The generic LLM adapter stays the default path, because everyone can run it.
+- `deciders-jev` and `deciders-kev` as optional adapters. The generic LLM adapter stays the one the docs start with, because everyone can run it.
 - Public seed dataset, subject to the licensing question in OPEN-QUESTIONS.
 - Done when: the report is reproducible by someone without a Jev key.
 
@@ -95,21 +96,6 @@ Steps 1–4 run in order. Steps 5, 6 and 7 can run in parallel after step 2. Ste
 - ERC-4337 helpers, a real-extension wallet driver, a vision fallback.
 - Nightly exploratory runs, advisory only.
 - Mobile: **not planned.**
-
-## Old milestone numbers
-
-| Old | Now |
-|---|---|
-| M0 foundation, M1 core | Done |
-| M2 decision cache, M2 follow-up | Step 1c, step 4 |
-| M3 deciders | Step 2 (LLM, fake), step 5 (Jev, Kev) |
-| M4 Playwright plugin | Step 2 |
-| M5 locator repair, M6 recorder | Step 6, as tools for the developer's agent |
-| M7 eval and dataset | Step 3 (first measurement), step 5 |
-| M8 Web3 wallet pack and demos | Step 7 |
-| M9 release 0.1.0 | Step 9 |
-| v0.2 properties and triage | Step 8 |
-| v0.3 Web3 depth | Later |
 
 ## Tracking
 
