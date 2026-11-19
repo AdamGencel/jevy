@@ -2,7 +2,7 @@
   "name": "@jevyjs/core",
   "private": true,
   "version": "0.0.0",
-  "description": "Decider interface, verdicts, snapshot hashing, redaction, and config for Jevy",
+  "description": "Decider contract, verdicts, snapshot hashing, redaction, decision cache and config for Jevy",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",

@@ -2,7 +2,7 @@
   "name": "jevy",
   "private": true,
   "version": "0.0.0",
-  "description": "AI-assisted testing that produces plain Playwright code",
+  "description": "A test framework for the AI era: checks you can trust when coding agents write the code and the tests",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",

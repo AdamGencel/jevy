@@ -2,7 +2,7 @@
   "name": "@jevyjs/web3",
   "private": true,
   "version": "0.0.0",
-  "description": "Wallet pack for Jevy: mock EIP-1193 provider, prompt classification, policy and viem helpers",
+  "description": "Wallet pack for Jevy: wallet prompts as test objects, signing policy in code, chain state checked in code",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",
