@@ -169,7 +169,7 @@ export default defineConfig({
 1. **The developer's agent drives.** Jevy has no planner or agent loop of its own.
 2. **Plain code first.** Locators and exact assertions run as written. A model is asked only where code cannot decide.
 3. **Three verdicts.** Doubt is `needs-review`, never a guessed pass or fail.
-4. **Nothing is weakened silently.** No self-healing. A repair is a diff, and the guard reports a weakened test.
+4. **Nothing is weakened silently.** A broken test is never healed quietly. A fix is proposed as a diff, a person approves it, and the guard reports a weakened test.
 5. **Decisions are cached in git and re-checked.** A record is bound to the state, the decider and the model, and goes through the gate again on every replay.
 6. **Numbers in code.** Amounts, balances, dates and chain state are checked with code, never judged by a model.
 7. **Any model.** One `Decider` interface. No model is called until you name one in your config, and a local model keeps page content on your machine.

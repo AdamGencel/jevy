@@ -17,7 +17,7 @@ Principles that follow:
 - **The developer's agent drives.** Jevy has no planner or agent loop of its own. It supplies checks, tools and guardrails to whatever agent the developer uses.
 - **It runs inside the existing runner.** Playwright is the first one. Jevy plugs into `@playwright/test` and does not add a runner or a test file format.
 - **Plain code first.** Locators and exact assertions run as written. A decider is asked only at defined decision points: judging a semantic check, choosing among candidates the code built, classifying a wallet prompt, and later ranking properties.
-- **Nothing is weakened silently.** No self-healing. A repair is a diff to review, and the guard reports a weakened test.
+- **Nothing is weakened silently.** A broken test is never healed quietly. A fix is proposed as a diff, a person approves it, and the guard reports a weakened test.
 - **Decisions are cached and re-checked.** A record is bound to the redacted state, the decider and the model, and passes the gate again on every replay.
 - **Numbers in code.** Amounts, balances, dates, gas and chain state are checked with code, never judged by a model.
 - **Any model.** One `Decider` interface. The generic LLM adapter comes first and is where the docs start, because everyone can run it. Config has no built-in decider: nothing is sent to any model until a project names one. A local model keeps page content on the machine.
