@@ -40,7 +40,7 @@ Five work packages. They do not depend on a model or on the network. Each was bu
 
 ### Step 2 — The guard inside the agent's loop
 
-Today the guard reports a weakened test after the fact. This step stops it earlier, and widens what the guard sees.
+Today the guard reports a weakened test after the fact. This step stops it earlier, and widens what the guard sees. The build plan is in [plans/step-2.md](plans/step-2.md).
 
 - **Hooks for coding agents.** A stop hook that runs the project's real test, type-check and lint commands, plus `jevy guard`, before the agent may say it is done. A pre-edit hook that blocks or flags edits to protected paths. Claude Code first; other agents where they offer hooks.
 - **Protected paths.** A project lists what an agent must not change without a person: test plans, the Jevy config, the decision cache, and any tests it chooses. The guard treats a change there as weakening.

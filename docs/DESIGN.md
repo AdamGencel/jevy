@@ -4,7 +4,18 @@ Status: sections 5, 6 and 7 describe code that is in the tree and tested. Sectio
 
 ## 1. What Jevy is for
 
-Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is a test framework designed around six properties:
+Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is a test framework for teams whose code and tests are mostly written by coding agents. It runs on Playwright and does six jobs:
+
+1. **Knows your app.** An app map of routes, pages and endpoints, and a fingerprint of what each test touches (planned, §8.4).
+2. **Creates tests worth having.** A planner and a generator, and an admission check every new test must pass (planned, §8.5 and §8.6).
+3. **Runs them cheaply and honestly.** Exact checks in code; judgement checks answered by a model once, stored in git, and replayed with no model call; three verdicts (the decision layer is built, §5 and §6; the `toSatisfy` matcher is planned, §8.3).
+4. **Protects them.** The guard (built, §7), agent hooks and protected paths (§8.1), a healer that only proposes (§8.6), and checks on stored verdicts and approvals (§8.9).
+5. **Shows what happened.** A report page, test history and a proof file per pull request (planned, §8.7 and §8.8).
+6. **Measures itself.** `eval` scores a model on labelled cases before its answers are trusted (planned, §8.10).
+
+Web3 is built on the same six jobs (§8.11). Section 3 shows how the jobs connect.
+
+The framework is designed around six properties:
 
 1. **Agent-operable.** An agent can install, run and read Jevy without a person: non-interactive commands, stable exit codes, a versioned machine-readable report, and a reason on every result that is not a pass.
 2. **Tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a weakened test, checks that a new cached verdict really came from a model, and does not let an agent approve its own `needs-review`.
@@ -42,26 +53,62 @@ Principles that follow:
 
 ```mermaid
 flowchart TD
-  Agent["Developer's coding agent<br/>writes code and tests"] --> Test
-  subgraph Run["A test run, local or CI"]
-    Test["Playwright step"] -->|"locator or exact expect"| Code["Checked in code"]
-    Test -->|"toSatisfy"| Snap["Page snapshot<br/>secret fields blanked"]
-    Snap --> Proj["Redact, normalise, hash"]
-    Proj --> Cache{"Decision cache<br/>hit?"}
-    Cache -->|"hit"| Gate{"Gate"}
-    Cache -->|"miss in replay"| Review["needs-review<br/>with a reason"]
-    Cache -->|"miss in record"| Decider["Decider<br/>LLM, Kev or Jev"]
+  Agent["Developer's coding agent"]
+  Person["A person approves"]
+
+  subgraph J1["1. Knows your app"]
+    Map["App map<br/>routes, pages, endpoints"]
+    FP["Test fingerprints<br/>what each test touches"]
+  end
+
+  subgraph J2["2. Creates tests worth having"]
+    Planner["Planner"] --> Plan["Plan"]
+    Plan --> Generator["Generator"]
+    Generator --> Admit{"Admission check<br/>new, not a duplicate,<br/>catches a planted bug"}
+  end
+
+  subgraph J3["3. Runs them cheaply and honestly"]
+    Test["Playwright test"] -->|"exact checks"| Code["Checked in code"]
+    Test -->|"toSatisfy"| Cache{"Stored verdict<br/>for this state?"}
+    Cache -->|"yes"| Gate{"Gate"}
+    Cache -->|"no"| Decider["Model, asked once"]
     Decider --> Gate
     Gate --> Verdict["pass / fail / needs-review"]
   end
-  Gate -->|"test passed: confirm"| Store[(".jevy/decisions<br/>JSONL in git")]
-  Store --> Cache
-  Verdict --> Report["report.json"]
-  Review --> Report
-  Report --> Agent
-  Diff["Two commits: tests,<br/>config, decisions"] --> Guard["jevy guard"]
-  Guard -->|"weakening or review"| Person["A person reviews"]
+
+  subgraph J4["4. Protects them"]
+    Hooks["Agent hooks and<br/>protected paths"]
+    Guard["jevy guard"]
+    Healer["Healer<br/>proposes a diff"]
+    Verify["Cache verify"]
+  end
+
+  subgraph J5["5. Shows what happened"]
+    Page["Report page"]
+    History[("History store")]
+    Bundle["Proof file per pull request"]
+  end
+
+  subgraph J6["6. Measures itself"]
+    Eval["jevy eval"]
+  end
+
+  Agent --> Planner
+  Map --> Planner
+  FP --> Planner
+  FP --> Admit
+  Plan --> Person
+  Admit -->|"admitted"| Test
+  Agent --> Hooks
+  Healer --> Person
+  Verdict --> Page
+  Verdict --> Bundle
+  Guard --> Bundle
+  History --> Page
+  Eval -->|"thresholds"| Gate
 ```
+
+The planner, generator and healer run inside the developer's coding agent. Everything in jobs 3 to 5 that decides whether a merge is allowed runs with no agent and no model.
 
 | Piece | Package | State |
 |---|---|---|

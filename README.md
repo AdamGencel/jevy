@@ -4,16 +4,16 @@
 
 > **Status: early, not yet on npm.** What works today, from a clone of this repo: `jevy guard`, the decision layer in `@jevyjs/core` (three verdicts, snapshot hashing, redaction, the decision cache with replay), and the Playwright snapshot bridge. The agent hooks, the `toSatisfy` matcher, the admission check for new tests, the planner, generator and healer, the report page, `eval` and the wallet pack are planned and marked as such below. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
-Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is an open-source TypeScript test framework designed around these properties (the status note above says which parts exist today):
+Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. **Jevy is an open-source test framework for teams whose code and tests are mostly written by coding agents.** It runs on Playwright, and does six jobs:
 
-- **An agent can operate it.** Commands are non-interactive, exit codes are stable, the report is machine-readable, and every result that is not a pass says why.
-- **It is tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a test that was weakened, and is designed so an agent cannot approve its own doubtful result.
-- **It is cheap to repeat.** A model's verdict is cached in git and replayed with no model call. A relevant change to the page is a miss, never a guess.
-- **It is honest about doubt.** There are three verdicts: `pass`, `fail` and `needs-review`. A weak or cut-off answer is `needs-review`.
-- **It is measured.** A model is scored on labelled cases before its verdicts are trusted.
-- **Tests are earned and inspectable.** A test joins the suite only if it covers something real and new, and a person can see what every test does and how it has behaved.
+1. **Knows your app.** It maps your routes, pages and endpoints, and records what each test actually touches, so it can say what is covered and what is not.
+2. **Creates tests worth having.** A planner proposes only what is missing and a generator writes plain Playwright tests. Every new test must pass an admission check: a person approved the plan, it duplicates nothing, and it catches a deliberately planted bug.
+3. **Runs them cheaply and honestly.** Exact checks stay in code. A check that needs judgement goes to a model once; the answer is stored in git and replayed with no model call. A doubtful answer is `needs-review`, never a guess.
+4. **Protects them.** The guard and agent hooks stop a test being quietly weakened. A broken test gets a proposed fix that a person approves. An agent cannot approve its own work.
+5. **Shows what happened.** A page where the team can read what each test protects, step by step, with screenshots and history, plus one proof file per pull request.
+6. **Measures itself.** A model is scored on labelled cases before its answers are trusted.
 
-Jevy runs no model loop of its own. Your coding agent does the driving; Jevy gives it a planner, a generator and a healer to run, plus checks and guardrails. It runs inside the test runner you already use. Playwright is the first one, and Jevy plugs into `@playwright/test` rather than replacing it. Web3 is first class: wallet prompts, signing policy and chain state use the same mechanisms as any other check.
+Today, parts of jobs 3 and 4 are built; the status note above and the sections below say exactly which. Jevy runs no model loop of its own: your coding agent does the driving, and Jevy gives it a planner, a generator and a healer to run, plus checks and guardrails. Web3 is built on the same six jobs: wallet prompts, signing policy and chain state use the same mechanisms as any other check.
 
 ## The problem
 
