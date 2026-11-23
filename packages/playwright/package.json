@@ -2,7 +2,7 @@
   "name": "@jevyjs/playwright",
   "private": true,
   "version": "0.0.0",
-  "description": "Playwright plugin for Jevy: semantic assertions, locator repair and the reporter",
+  "description": "Playwright integration for Jevy: page snapshots, and later semantic assertions and the report",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",

@@ -1,5 +1,7 @@
 # Spike: the snapshot source (Step 1d)
 
+This is a dated finding (18 Nov 2026), kept as evidence. The current design is in [DESIGN.md §6](../DESIGN.md#6-built-the-snapshot-bridge-jevyjsplaywright). Of the recommendations in section 8, number 3 is done (core exports `SECRET_AUTOCOMPLETE_TOKENS` and the bridge uses it), 1 and 6 are adopted in the docs, 2 and 4 are carried into roadmap step 2, and 5 is open.
+
 Status: done. Playwright 1.63.0, Chromium 1243 (headless), Node 22. Every output below was printed by that browser for the HTML shown, with `page.setContent`. Older versions were checked only by reading the type declarations and bundled source of `playwright-core` 1.48 to 1.62 from npm; no older browser was run.
 
 Code: `packages/playwright/src/parse.ts` (`parseAriaSnapshot`), `secrets.ts`, `snapshot.ts` (`snapshotAccessibility`). Tests: `packages/playwright/src/*.test.ts`.
