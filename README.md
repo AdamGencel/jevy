@@ -143,17 +143,19 @@ test("order is confirmed", async ({ page }) => {
 
 **Tests that earn their place (step 6).** An admission check for every new test, whoever wrote it. It must trace to a line in a short plan a person approved, must not duplicate an existing test, and must either cover something uncovered or catch a deliberately planted bug that nothing else catches. `jevy suite` lists existing tests that add nothing.
 
-**Planner, generator and healer (step 7).** Jevy's own versions of Playwright's three agents, run by your coding agent. The planner reads the app map and existing coverage and proposes only what is missing. The generator writes a plain Playwright test from an approved plan line. The healer never heals quietly: it proposes a fix as a diff, and the test stays red until a person approves it.
+**Planner, generator and healer (step 7).** Jevy's own versions of Playwright's three agents, run by your coding agent. The planner reads the app map and existing coverage and proposes only what is missing. The generator writes a plain Playwright test from an approved plan line. The healer never heals quietly: it proposes a fix as a diff, and the test stays red until a person approves it. The same agents run in CI in your coding agent's headless mode, where they only propose. The checks that gate a merge never need an agent.
 
-**The report page and the proof bundle (step 8).** A static page your team can open: for each test, what it protects, each step in plain words, a screenshot per step with the element highlighted, what it covers, and its history of passes, failures and flakes. Jevy hosts nothing. The same facts go into one signed file per pull request for a reviewer or an agent to read.
+**The report page and the proof bundle (step 8).** A static page your team can open: for each test, what it protects, each step in plain words, a screenshot per step with the element highlighted, and what it covers. The same facts go into one signed file per pull request for a reviewer or an agent to read.
 
-**Integrity (step 9).** `jevy cache verify` re-asks the model about records added in a pull request, so a forged `pass` fails CI. A person's approval, of a plan line, a healer's fix or a `needs-review` result, counts only when the commit that adds it passes a check the project defines.
+**Test history (step 9).** Each test's passes, failures and flakes over time, shown on the report page. History goes through a small store interface: a built-in store that needs no service, your own, or a results service you already use. A hosted Jevy dashboard that ties it all together may come later as an optional, separate product; the framework will never depend on it.
 
-**Eval and more deciders (step 10).** `jevy eval` reports accuracy, calibration, latency and cost per decider on labelled cases, and suggests thresholds. Adapters for TypeSafe AI's Jev (hosted) and Kev (local, open-weight) are optional extras.
+**Integrity (step 10).** `jevy cache verify` re-asks the model about records added in a pull request, so a forged `pass` fails CI. A person's approval, of a plan line, a healer's fix or a `needs-review` result, counts only when the commit that adds it passes a check the project defines.
 
-**Web3 wallet pack (step 11).** `@jevyjs/web3` treats a wallet prompt as a test object. A decider classifies the prompt; a policy you write in TypeScript approves, rejects or stops; amounts, recipients and chain IDs are decoded and checked in code; chain state is checked in code against a local fork or a testnet you configure. Mainnet signing is refused unless you switch it on.
+**Eval and more deciders (step 11).** `jevy eval` reports accuracy, calibration, latency and cost per decider on labelled cases, and suggests thresholds. Adapters for TypeSafe AI's Jev (hosted) and Kev (local, open-weight) are optional extras.
 
-**Properties and invariants (step 12).** Generated properties, kept only when they compile, pass, and catch a planted bug.
+**Web3 wallet pack (step 12).** `@jevyjs/web3` treats a wallet prompt as a test object. A decider classifies the prompt; a policy you write in TypeScript approves, rejects or stops; amounts, recipients and chain IDs are decoded and checked in code; chain state is checked in code against a local fork or a testnet you configure. Mainnet signing is refused unless you switch it on.
+
+**Properties and invariants (step 13).** Generated properties, kept only when they compile, pass, and catch a planted bug.
 
 Configuration lives in `jevy.config.ts`. The loader exists today and accepts this:
 

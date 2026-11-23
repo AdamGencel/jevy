@@ -6,7 +6,7 @@ Thanks for your interest. Jevy is a personal open-source project maintained by A
 
 - Read [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md).
 - Open an issue or discussion on [github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy) with design feedback. Point to the section you're commenting on.
-- Labelled eval cases are welcome once the case schema is published (roadmap step 10). They must come from public apps only and contain no personal or sensitive data.
+- Labelled eval cases are welcome once the case schema is published (roadmap step 11). They must come from public apps only and contain no personal or sensitive data.
 
 ## Developer Certificate of Origin (DCO)
 
