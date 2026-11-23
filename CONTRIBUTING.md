@@ -6,7 +6,7 @@ Thanks for your interest. Jevy is a personal open-source project maintained by A
 
 - Read [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md).
 - Open an issue or discussion on [github.com/AdamGencel/jevy](https://github.com/AdamGencel/jevy) with design feedback. Point to the section you're commenting on.
-- Labelled eval cases are welcome once the case schema is published (roadmap step 5). They must come from public apps only and contain no personal or sensitive data.
+- Labelled eval cases are welcome once the case schema is published (roadmap step 10). They must come from public apps only and contain no personal or sensitive data.
 
 ## Developer Certificate of Origin (DCO)
 
@@ -40,9 +40,9 @@ Signed-off-by: Your Name <you@example.com>
   - Use an in-memory fake decider in unit tests; never call a model in CI.
   - Tests that need a real decider (Jev, Kev or an LLM) are opt-in and read keys from environment variables, for example `TYPESAFE_API_KEY`.
 - **Product only:** the repo holds the Jevy packages. Please don't add example apps or site-specific code (for example for Uniswap). Demos are recorded videos kept outside the repo, and package tests use small fixtures.
-- **Scope:** Playwright is the first runner. Please discuss other runners or API-level adapters in an issue first. Mobile is not planned. Jevy has no agent loop of its own, so please do not add a planner or a recorder.
+- **Scope:** Playwright is the first runner. Please discuss other runners or API-level adapters in an issue first. Mobile is not planned. Jevy runs no model loop of its own, and has no recorder. Its planner, generator and healer are definitions run by the developer's coding agent.
 - **Core principles a PR must not break:**
-  - No silent self-healing, and never weaken a test to make it pass. Run `jevy guard --base origin/main` before you open a pull request.
+  - No quiet healing, and never weaken a test to make it pass. Run `jevy guard --base origin/main` before you open a pull request.
   - No AI judgement of numbers, amounts or chain state.
   - Every AI decision goes through the decision cache, with redaction.
   - No decider is selected by default. A project names the one it uses.

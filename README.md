@@ -2,17 +2,18 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: early, not yet on npm.** What works today, from a clone of this repo: `jevy guard`, the decision layer in `@jevyjs/core` (three verdicts, snapshot hashing, redaction, the decision cache with replay), and the Playwright snapshot bridge. The `toSatisfy` matcher, the model adapters, `eval`, the agent tools and the wallet pack are planned and marked as such below. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: early, not yet on npm.** What works today, from a clone of this repo: `jevy guard`, the decision layer in `@jevyjs/core` (three verdicts, snapshot hashing, redaction, the decision cache with replay), and the Playwright snapshot bridge. The agent hooks, the `toSatisfy` matcher, the admission check for new tests, the planner, generator and healer, the report page, `eval` and the wallet pack are planned and marked as such below. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
-Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is an open-source TypeScript test framework designed around five properties (the status note above says which parts exist today):
+Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is an open-source TypeScript test framework designed around these properties (the status note above says which parts exist today):
 
 - **An agent can operate it.** Commands are non-interactive, exit codes are stable, the report is machine-readable, and every result that is not a pass says why.
 - **It is tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a test that was weakened, and is designed so an agent cannot approve its own doubtful result.
 - **It is cheap to repeat.** A model's verdict is cached in git and replayed with no model call. A relevant change to the page is a miss, never a guess.
 - **It is honest about doubt.** There are three verdicts: `pass`, `fail` and `needs-review`. A weak or cut-off answer is `needs-review`.
 - **It is measured.** A model is scored on labelled cases before its verdicts are trusted.
+- **Tests are earned and inspectable.** A test joins the suite only if it covers something real and new, and a person can see what every test does and how it has behaved.
 
-Jevy does not ship its own agent loop. Your coding agent does the driving; Jevy gives it checks, tools and guardrails. It runs inside the test runner you already use. Playwright is the first one, and Jevy plugs into `@playwright/test` rather than replacing it. Web3 is first class: wallet prompts, signing policy and chain state use the same mechanisms as any other check.
+Jevy runs no model loop of its own. Your coding agent does the driving; Jevy gives it a planner, a generator and a healer to run, plus checks and guardrails. It runs inside the test runner you already use. Playwright is the first one, and Jevy plugs into `@playwright/test` rather than replacing it. Web3 is first class: wallet prompts, signing policy and chain state use the same mechanisms as any other check.
 
 ## The problem
 
@@ -117,9 +118,11 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## What is planned
 
-In roadmap order. Everything in this section is intended usage and will change.
+In roadmap order. Everything in this section is intended usage and will change. [docs/ROADMAP.md](docs/ROADMAP.md) says why the steps are in this order.
 
-**A semantic assertion in Playwright (step 2).** The first ready-made decider is a generic adapter for any LLM you plug in, so nobody needs a particular vendor's key.
+**The guard inside the agent's loop (step 2).** Hooks for coding agents: a stop hook runs your real test, type-check and lint commands plus `jevy guard` before the agent may say it is done, and a pre-edit hook protects the paths you list (test plans, config, the decision cache, chosen tests). The guard also learns to flag a new test that checks nothing.
+
+**A semantic assertion in Playwright (step 3).** The first ready-made decider is a generic adapter for any LLM you plug in, so nobody needs a particular vendor's key.
 
 ```ts
 import { test, expect } from "@jevyjs/playwright"; // wraps @playwright/test
@@ -132,19 +135,25 @@ test("order is confirmed", async ({ page }) => {
 });
 ```
 
-A run also writes `report.json`: for each assertion, the verdict, whether it came from the cache or a model, the reason for a miss, and the decider and model.
+`toSatisfy` is advisory by default: its result is reported and does not fail your build until you switch blocking on. A run also writes `report.json`: for each assertion, the verdict, whether it came from the cache or a model, the reason for a miss, and the decider and model.
 
-**Measuring the two risky assumptions (step 3).** How often the hash of an unchanged real page changes, and how often a model judge is right. The result decides whether the cache key keeps its current shape.
+**Measuring the two risky assumptions (step 4).** How often the hash of an unchanged real page changes, and how often a model judge is right. The result decides when `toSatisfy` may block a merge and whether the cache key keeps its current shape.
 
-**Integrity (step 4).** `jevy cache verify` re-asks the model about records added in a pull request, so a forged `pass` fails CI. A human approval of a `needs-review` result counts only when the commit that adds it passes a check the project defines.
+**The app map and test fingerprints (step 5).** Jevy reads your routes, pages and API endpoints from the codebase, and records what each test visits, clicks, checks and executes. You mark the critical areas. The result shows what is covered, by which tests, and what is not.
 
-**Eval and more deciders (step 5).** `jevy eval` reports accuracy, calibration, latency and cost per decider on labelled cases, and suggests thresholds. Adapters for TypeSafe AI's Jev (hosted) and Kev (local, open-weight) are optional extras.
+**Tests that earn their place (step 6).** An admission check for every new test, whoever wrote it. It must trace to a line in a short plan a person approved, must not duplicate an existing test, and must either cover something uncovered or catch a deliberately planted bug that nothing else catches. `jevy suite` lists existing tests that add nothing.
 
-**Agent tools (step 6).** A skill file, `jevy init --yes`, and an MCP server. Recording a new flow and repairing a broken locator are done by your agent through these tools, under the guard. A repair is always a diff to review, never a silent edit.
+**Planner, generator and healer (step 7).** Jevy's own versions of Playwright's three agents, run by your coding agent. The planner reads the app map and existing coverage and proposes only what is missing. The generator writes a plain Playwright test from an approved plan line. The healer never heals quietly: it proposes a fix as a diff, and the test stays red until a person approves it.
 
-**Web3 wallet pack (step 7).** `@jevyjs/web3` treats a wallet prompt as a test object. A decider classifies the prompt; a policy you write in TypeScript approves, rejects or stops; amounts, recipients and chain IDs are decoded and checked in code; chain state is checked in code against a local fork or a testnet you configure. Mainnet signing is refused unless you switch it on.
+**The report page and the proof bundle (step 8).** A static page your team can open: for each test, what it protects, each step in plain words, a screenshot per step with the element highlighted, what it covers, and its history of passes, failures and flakes. Jevy hosts nothing. The same facts go into one signed file per pull request for a reviewer or an agent to read.
 
-**Tests that prove they test something (step 8).** A mutation gate: a new or changed test must fail on at least one mutant of the code it covers. Then generated properties and invariants, kept only when they kill a mutant.
+**Integrity (step 9).** `jevy cache verify` re-asks the model about records added in a pull request, so a forged `pass` fails CI. A person's approval, of a plan line, a healer's fix or a `needs-review` result, counts only when the commit that adds it passes a check the project defines.
+
+**Eval and more deciders (step 10).** `jevy eval` reports accuracy, calibration, latency and cost per decider on labelled cases, and suggests thresholds. Adapters for TypeSafe AI's Jev (hosted) and Kev (local, open-weight) are optional extras.
+
+**Web3 wallet pack (step 11).** `@jevyjs/web3` treats a wallet prompt as a test object. A decider classifies the prompt; a policy you write in TypeScript approves, rejects or stops; amounts, recipients and chain IDs are decoded and checked in code; chain state is checked in code against a local fork or a testnet you configure. Mainnet signing is refused unless you switch it on.
+
+**Properties and invariants (step 12).** Generated properties, kept only when they compile, pass, and catch a planted bug.
 
 Configuration lives in `jevy.config.ts`. The loader exists today and accepts this:
 
@@ -166,14 +175,15 @@ export default defineConfig({
 
 ## Principles
 
-1. **The developer's agent drives.** Jevy has no planner or agent loop of its own.
+1. **The developer's agent drives.** Jevy runs no model loop of its own; its planner, generator and healer run inside your coding agent.
 2. **Plain code first.** Locators and exact assertions run as written. A model is asked only where code cannot decide.
 3. **Three verdicts.** Doubt is `needs-review`, never a guessed pass or fail.
 4. **Nothing is weakened silently.** A broken test is never healed quietly. A fix is proposed as a diff, a person approves it, and the guard reports a weakened test.
 5. **Decisions are cached in git and re-checked.** A record is bound to the state, the decider and the model, and goes through the gate again on every replay.
 6. **Numbers in code.** Amounts, balances, dates and chain state are checked with code, never judged by a model.
 7. **Any model.** One `Decider` interface. No model is called until you name one in your config, and a local model keeps page content on your machine.
-8. **Measure before trusting.** An advisory step stays on only if at least 70% of its findings are accepted as real.
+8. **Measure before trusting.** A model-judged check is advisory until its accuracy is measured, and an advisory step stays on only if at least 70% of its findings are accepted as real.
+9. **A test has to earn its place.** It traces to a plan a person approved, duplicates nothing, and covers something new or catches a planted bug.
 
 ## How Jevy compares
 
@@ -192,8 +202,8 @@ The last column says what is implemented today.
 | Package | Purpose | Today |
 |---|---|---|
 | `@jevyjs/core` | Decider contract, verdicts, snapshot hashing, redaction, pruning, decision cache, config | Implemented |
-| `@jevyjs/playwright` | Page snapshots; later the `toSatisfy` matcher and the report | Snapshots only |
-| `@jevyjs/cli` | The `jevy` command: `guard`; later `cache`, `eval`, `init` | `guard` only |
+| `@jevyjs/playwright` | Page snapshots; later the `toSatisfy` matcher, test fingerprints and the report page | Snapshots only |
+| `@jevyjs/cli` | The `jevy` command: `guard`; later the hooks, the app map, admission, the agents, `cache`, `eval`, `init` | `guard` only |
 | `@jevyjs/deciders-llm` | Generic adapter for any LLM | Stub |
 | `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter | Stub |
 | `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter | Stub |

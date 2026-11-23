@@ -4,17 +4,19 @@ Status: sections 5, 6 and 7 describe code that is in the tree and tested. Sectio
 
 ## 1. What Jevy is for
 
-Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is a test framework designed around five properties:
+Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. Jevy is a test framework designed around six properties:
 
 1. **Agent-operable.** An agent can install, run and read Jevy without a person: non-interactive commands, stable exit codes, a versioned machine-readable report, and a reason on every result that is not a pass.
 2. **Tamper-evident.** The agent that writes the code also edits the tests. Jevy flags a weakened test, checks that a new cached verdict really came from a model, and does not let an agent approve its own `needs-review`.
 3. **Cheap and repeatable in the loop.** A verdict is cached in git and replayed with no model call. A relevant change is a miss, not a guess.
 4. **Honest about doubt.** Three verdicts. A weak or cut-off answer is `needs-review`, never a guessed pass or fail.
 5. **Measured.** `eval` reports how often each decider is right on labelled cases before anyone trusts it.
+6. **Earned and inspectable.** A test joins the suite only if it covers something real and new, and a person can see what every test does and how it has behaved.
 
 Principles that follow:
 
-- **The developer's agent drives.** Jevy has no planner or agent loop of its own. It supplies checks, tools and guardrails to whatever agent the developer uses.
+- **The developer's agent drives.** Jevy runs no model loop of its own. Its planner, generator and healer are definitions and tools that run inside whatever coding agent the developer uses.
+- **A test has to earn its place.** A new test must trace to a plan a person approved, add coverage or catch a planted bug nothing else catches, and not duplicate an existing test.
 - **It runs inside the existing runner.** Playwright is the first one. Jevy plugs into `@playwright/test` and does not add a runner or a test file format.
 - **Plain code first.** Locators and exact assertions run as written. A decider is asked only at defined decision points: judging a semantic check, choosing among candidates the code built, classifying a wallet prompt, and later ranking properties.
 - **Nothing is weakened silently.** A broken test is never healed quietly. A fix is proposed as a diff, a person approves it, and the guard reports a weakened test.
@@ -27,12 +29,12 @@ Principles that follow:
 ## 2. Non-goals
 
 - **No new test runner.** Jevy builds on `@playwright/test`. Other runners may follow; mobile is not planned.
-- **No agent loop of its own.** Jevy does not plan steps or drive the browser toward a goal. Recording a flow and repairing a locator are done by the developer's agent through Jevy's tools (§8.5).
-- **No silent self-healing.** The research found silent heals hide regressions, and Playwright's own healer can loosen assertions or add `test.fixme()`.
+- **No model loop of its own, and no recorder.** Jevy does not call a model to drive the browser toward a goal. Planning, writing and repairing tests are done by the developer's coding agent, using Jevy's agent definitions and tools (§8.6).
+- **No quiet healing.** The research found silent heals hide regressions, and Playwright's own healer can loosen assertions or add `test.fixme()`. Jevy's healer proposes a diff and a person approves it.
 - **No model judgement of numbers, amounts, balances, dates, gas or chain state.** Jev's own docs say it is weak at maths, counting and date comparison ("keep the arithmetic in code").
 - **No natural-language tests at run time.** A statement in `toSatisfy` is an assertion inside a code test. What runs in CI is code plus recorded decisions.
 - **No autonomous exploratory testing as a merge gate.** The evidence rates it "promising, not a merge gate": the best of 15 agents found and fixed 59.0% of bugs on SWEeper-Bench. If it comes, it is advisory.
-- **No hosted cloud, dashboard or vendor test format.**
+- **No hosted service and no vendor test format.** The report page is a static page a project opens locally or publishes itself.
 - **No bundled example apps or site-specific code.** Package tests use small fixtures inside each package.
 - **Not an AI auditor, and no replacement for human review or audits.**
 
@@ -70,21 +72,25 @@ flowchart TD
 | Config loader | `@jevyjs/core` | Built (§5.6) |
 | Page snapshot from Playwright | `@jevyjs/playwright` | Built (§6) |
 | Guard | `@jevyjs/cli` | Built (§7) |
-| Deciders: LLM, Kev, Jev | `@jevyjs/deciders-*` | Planned (§8.1) |
-| `toSatisfy` and `report.json` | `@jevyjs/playwright` | Planned (§8.2) |
-| Cache verification and approvals | `@jevyjs/cli` | Planned (§8.3) |
-| Eval | `@jevyjs/cli` | Planned (§8.4) |
-| Skill file, `init`, MCP server | `@jevyjs/cli` | Planned (§8.5) |
-| Wallet pack | `@jevyjs/web3` | Planned (§8.6) |
-| Mutation gate, properties | to be decided | Planned (§8.7) |
+| Deciders: LLM, Kev, Jev | `@jevyjs/deciders-*` | Planned (§8.2) |
+| `toSatisfy` and `report.json` | `@jevyjs/playwright` | Planned (§8.3) |
+| Hooks, protected paths, skill file | `@jevyjs/cli` | Planned (§8.1) |
+| App map and test fingerprints | `@jevyjs/cli`, `@jevyjs/playwright` | Planned (§8.4) |
+| Admission check and mutation gate | `@jevyjs/cli` | Planned (§8.5) |
+| Planner, generator, healer, `init` | `@jevyjs/cli` | Planned (§8.6) |
+| Report page and proof bundle | `@jevyjs/cli`, `@jevyjs/playwright` | Planned (§8.7) |
+| Cache verification and approvals | `@jevyjs/cli` | Planned (§8.8) |
+| Eval | `@jevyjs/cli` | Planned (§8.9) |
+| Wallet pack | `@jevyjs/web3` | Planned (§8.10) |
+| Properties and invariants | to be decided | Planned (§8.11) |
 
 ## 4. Packages
 
 ```
 packages/
   core/            @jevyjs/core           decider contract, verdicts, snapshot hash, redaction, pruning, cache, config
-  playwright/      @jevyjs/playwright     page snapshots; later toSatisfy and the report
-  cli/             @jevyjs/cli (bin jevy) guard; later cache, eval, init and the MCP server
+  playwright/      @jevyjs/playwright     page snapshots; later toSatisfy, test fingerprints and the report page
+  cli/             @jevyjs/cli (bin jevy) guard; later hooks, the app map, admission, the agents, cache, eval and init
   deciders-llm/    @jevyjs/deciders-llm   generic adapter for any LLM (stub)
   deciders-kev/    @jevyjs/deciders-kev   Kev adapter, local (stub)
   deciders-jev/    @jevyjs/deciders-jev   TypeSafe AI Jev adapter, hosted (stub)
@@ -129,7 +135,7 @@ interface Decider {
 - **`callDecider` is the only supported way to call a decider.** It redacts and prunes the state, redacts the questions, calls `decide`, and checks the answers. It returns `{ answers, truncated }`.
 - **There is no screenshot field.** `prepareDecisionState` throws if a `screenshot` property is present.
 - **Limits are part of the contract.** More than 255 options, or a score outside 2 to 10 levels, throws. Core does not drop options to fit. The 255 cap is Jev's choice limit; every adapter must accept the same questions.
-- **`confidence` is one number today,** and it is not trusted until `eval` has calibrated it (§8.4).
+- **`confidence` is one number today,** and it is not trusted until `eval` has calibrated it (§8.9).
 
 **The question is redacted too.** `callDecider` redacts each prompt, yes/no criteria and choice label with the same rules as the snapshot before the decider sees them: a prompt is written by a person or an agent and can quote an email or a key as easily as a page can. Option ids and score levels are the values a decider answers with, so they are sent as written. One that redaction would change is refused with `RedactionError` before any call. Answers are checked against the questions as the caller wrote them.
 
@@ -245,11 +251,11 @@ A test asks a decider a question about a page. The answer is stored in git. Late
 
 **Run memo.** `createRunMemo()` maps a key to the answer and truncation drawn in this process. Pass one memo to all sessions of a run: when the memo has the key, `decide` does not call the decider again, in any mode, and does not hold a second record. A Playwright retry therefore cannot draw a new answer.
 
-**Review semantics.** A human decision is recorded by appending a copy of the record with `reviewedBy` and `reviewVerdict` set. The last appended record for a key wins. Who may set `reviewedBy` is not restricted yet. `jevy guard` flags every approval added in a diff (§7), and roadmap step 4 makes approvals checkable (§8.3).
+**Review semantics.** A human decision is recorded by appending a copy of the record with `reviewedBy` and `reviewVerdict` set. The last appended record for a key wins. Who may set `reviewedBy` is not restricted yet. `jevy guard` flags every approval added in a diff (§7), and roadmap step 9 makes approvals checkable (§8.8).
 
 **Other storage.** `cache.store` in config is rejected. A project that wants its records somewhere else implements `DecisionStore`.
 
-**Still open.** Two specs that ask the same question about the same state share a key, and so share a record, including a human review. A retry that passes on an answer remembered from a failed first attempt writes no record, so the next run asks again. Both are to be settled with the Playwright matcher (§8.2).
+**Still open.** Two specs that ask the same question about the same state share a key, and so share a record, including a human review. A retry that passes on an answer remembered from a failed first attempt writes no record, so the next run asks again. Both are to be settled with the Playwright matcher (§8.3).
 
 #### Why a cached verdict is not the recording checking itself
 
@@ -264,7 +270,7 @@ Inside one run, the run memo gives a retry the answer the first attempt drew. A 
 
 ### 5.6 Config
 
-`defineConfig` only types the object. `loadConfig` executes `jevy.config.ts`, then `.mts`, `.js`, or `.mjs`, using Node's type stripping (on by default from Node 22.18, which is the minimum), and `parseConfig` checks the result. Unknown keys throw. A missing file throws. Config has no built-in decider: nothing is sent to any model until the project names one or a test passes an override. `decider: "kev"` is the one-line local switch. `selectDecider(config, "kev")` is the per-test override this package can apply. The planned per-test switch in Playwright (`test.use`, §8.2) will call the same function. An override to the decider the project already selects keeps the project's model pin; an override to a different decider uses that decider's own configured model. An override never reuses the fallback list. Fallback ids are checked and stored. Nothing calls them.
+`defineConfig` only types the object. `loadConfig` executes `jevy.config.ts`, then `.mts`, `.js`, or `.mjs`, using Node's type stripping (on by default from Node 22.18, which is the minimum), and `parseConfig` checks the result. Unknown keys throw. A missing file throws. Config has no built-in decider: nothing is sent to any model until the project names one or a test passes an override. `decider: "kev"` is the one-line local switch. `selectDecider(config, "kev")` is the per-test override this package can apply. The planned per-test switch in Playwright (`test.use`, §8.3) will call the same function. An override to the decider the project already selects keeps the project's model pin; an override to a different decider uses that decider's own configured model. An override never reuses the fallback list. Fallback ids are checked and stored. Nothing calls them.
 
 When Jev is selected and unconfigured, the pin is `jev-1.14.0`, the base URL is `https://api.typesafe.ai`, and the key is read later from `TYPESAFE_API_KEY`. The loader stores that name and does not read the value. Kev defaults to `kev-4b@v1.0` at `http://127.0.0.1:8009`. An LLM decider requires `deciders.llm.adapter.complete` and an explicit `model`.
 
@@ -313,7 +319,7 @@ Current Playwright has no `page.accessibility`. What it offers is `locator.ariaS
 
 - **What the source fills:** role, name, value (inputs and textareas only), checked, pressed, disabled, expanded and selected (true only), level and invalid.
 - **What it never fills:** description, required, readonly, modal, multiline, multiselectable, orientation, keyshortcuts, roledescription, haspopup, autocomplete, valuetext, valuemin and valuemax. A hash of a Playwright page cannot see a change to those.
-- **What is dropped:** link URLs and placeholders, which core has no field for. A link that points somewhere new does not change the hash. Adding a redacted `url` field is carried into roadmap step 2.
+- **What is dropped:** link URLs and placeholders, which core has no field for. A link that points somewhere new does not change the hash. Adding a redacted `url` field is carried into roadmap step 3.
 - **Secret fields.** The aria snapshot prints password and other secret field values in clear, and drops `type` and `autocomplete`, so core's autocomplete rule cannot fire for a Playwright page. `snapshotAccessibility` reads password inputs and inputs with a secret autocomplete token (`SECRET_AUTOCOMPLETE_TOKENS`, exported by core) from the DOM in the same step, and replaces their values with `[REDACTED]` wherever they appear in the tree, whatever the label says. If the values keep changing between the two reads, it throws instead of returning.
 - **Known gap.** A password field that a "show password" control has switched to `type="text"`, and that has no secret autocomplete token, is not recognised.
 - **An attribute the parser does not know throws.** If a future Playwright prints a new state, snapshots fail loudly instead of hashing something unexpected.
@@ -329,17 +335,27 @@ A coding agent that writes the code also edits the tests, and the quickest way t
 - `playwright.config.*`
 - `*.jsonl` under the cache directory
 
-Sources are parsed with `ts.createSourceFile` and never executed. A file with a syntax error is reported for review instead of being compared, because a recovered tree could invent or hide changes. Tests are identified by their describe-plus-title path. The skip/only/fail markers on a test include those of every enclosing describe and of the file. Assertions are compared as multisets of matcher names and of 'signatures' (subject and arguments kept only when they are literals), so formatting, reordering and variable renames are not reported as changes. Decision files are diffed as multisets of lines because records are append-only. A newly added line with a non-null `reviewedBy` is weakening until roadmap step 4 makes approvals checkable (§8.3). Findings are sorted by file, line and kind, and the JSON report is versioned (`v: 1`).
+Sources are parsed with `ts.createSourceFile` and never executed. A file with a syntax error is reported for review instead of being compared, because a recovered tree could invent or hide changes. Tests are identified by their describe-plus-title path. The skip/only/fail markers on a test include those of every enclosing describe and of the file. Assertions are compared as multisets of matcher names and of 'signatures' (subject and arguments kept only when they are literals), so formatting, reordering and variable renames are not reported as changes. Decision files are diffed as multisets of lines because records are append-only. A newly added line with a non-null `reviewedBy` is weakening until roadmap step 9 makes approvals checkable (§8.8). Findings are sorted by file, line and kind, and the JSON report is versioned (`v: 1`).
 
 With `--head`, the comparison is between the two commits as given. In a pull request, pass the merge base as `--base`; otherwise tests added to the target branch after the pull request branched look like tests it removed. Known limits are listed in the README.
 
 ## 8. Planned
 
-Nothing in this section exists yet. The step numbers refer to ROADMAP.md.
+Nothing in this section exists yet. The step numbers refer to ROADMAP.md, which also says why the steps are in this order.
 
-### 8.1 Deciders (steps 2 and 5)
+### 8.1 The guard inside the agent's loop (step 2)
 
-**Generic LLM adapter (step 2, the first adapter).** The user plugs in any model through a small adapter. There is no built-in provider and no hard dependency.
+The guard (§7) reports a weakened test after the fact. This step stops it earlier.
+
+- **A stop hook.** Before a coding agent may say it is done, the hook runs the project's real test, type-check and lint commands, and `jevy guard`. An agent that claims success without running the checks is the most common failure, and a hook is deterministic where an instruction is not.
+- **A pre-edit hook and protected paths.** A project lists paths an agent must not change without a person: test plans, the Jevy config, the wallet policy, the decision cache, and any tests it chooses. The hook blocks or flags the edit, and the guard reports a change to a protected path as weakening. Read-only tests are the measured middle ground against test gaming; hiding tests entirely also hurts honest work.
+- **Weak new tests.** The guard today sees an existing test being weakened. It will also flag a new test with no assertion, an assertion that can never fail, and a test that only checks its own mocks.
+- **A short skill file.** The exact commands and the rules in a few lines. Long instruction files raise cost and lower task success.
+- Claude Code hooks come first; other agents where they offer an equivalent.
+
+### 8.2 Deciders (steps 3 and 10)
+
+**Generic LLM adapter (step 3, the first adapter).** The user plugs in any model through a small adapter. There is no built-in provider and no hard dependency.
 
 ```ts
 interface LlmAdapter { complete(prompt: string, jsonSchema: object): Promise<unknown> } // user-supplied; the type exists in core
@@ -351,34 +367,75 @@ declare function llmDecider(opts: { adapter: LlmAdapter; model: string }): Decid
 - **The prompt carries a compact rendering of the redacted, pruned tree,** in the indented style of Playwright's aria snapshot, not JSON. Core's canonical JSON is 1.3 to 2.5 times that size on the fixture pages. Playwright's raw YAML is never sent: it holds password values in clear. The token budget will be measured on what is actually sent.
 - A fake decider is published for tests.
 
-**Kev (step 5, local).** HTTP to a local base URL the user sets. Kev is served by its own Python server (installed from source with `uv`; it is not on npm or PyPI), and the adapter only talks HTTP to that server.
+**Kev (step 10, local).** HTTP to a local base URL the user sets. Kev is served by its own Python server (installed from source with `uv`; it is not on npm or PyPI), and the adapter only talks HTTP to that server.
 
 - **Laptop default (estimate):** `jaredpalmer/kev-4b@v1.0`. Kev's README recommends starting there and lists it as running on a 32 GB Apple Silicon Mac via MLX.
 - **Smaller laptops (for example 16 GB):** the docs will point to `kev-0.8b@v1.0`, which runs on any Apple Silicon Mac but is clearly less accurate (0.648 vs 0.817 dev accuracy on new sources, per Kev's README).
 - **Context:** both have a validated context of 8,192 tokens, so snapshot pruning targets that budget when Kev is selected.
 - These sizes are estimates until our own `eval` confirms them on laptop hardware.
 
-**Jev (step 5, hosted, opt-in).** Built on the Vercel AI SDK's decision API (`experimental_decide`) and TypeSafe's AI SDK provider (`@ai-sdk/typesafe-ai`). The pin is `jev-1.14.0`. Moving aliases (`jev-latest`, `jev-preview`) are rejected unless explicitly allowed, and the base URL must be on the allow-list; config already enforces both (§5.6). The key is read from `TYPESAFE_API_KEY`. The call goes from the user's machine or CI to that host. Jevy does not hold the key or stand between the user and TypeSafe.
+**Jev (step 10, hosted, opt-in).** Built on the Vercel AI SDK's decision API (`experimental_decide`) and TypeSafe's AI SDK provider (`@ai-sdk/typesafe-ai`). The pin is `jev-1.14.0`. Moving aliases (`jev-latest`, `jev-preview`) are rejected unless explicitly allowed, and the base URL must be on the allow-list; config already enforces both (§5.6). The key is read from `TYPESAFE_API_KEY`. The call goes from the user's machine or CI to that host. Jevy does not hold the key or stand between the user and TypeSafe.
 
 **Probability and confidence.** When a provider returns both the model's weight for the chosen value and its own reported confidence, they stay separate signals: a missing confidence is 0, and a missing probability is not treated as 1. `Answer` has one `confidence` number today. How the second signal is carried is decided with the first adapter that has it.
 
-### 8.2 `toSatisfy` and the report (step 2)
+### 8.3 `toSatisfy` and `report.json` (step 3)
 
 - **`expect(page | locator).toSatisfy(statement, opts?)`** on `@playwright/test`. The statement becomes a yes/no question about a snapshot of the target, and the result is one of the three verdicts. The docs will steer towards a locator, not the whole page: a smaller state is cheaper, and it changes less often (§11).
 - **One decision session per test** (§5.5). It is confirmed when the test passes and discarded when it fails, so an answer is stored only once the rest of the test agrees with it.
 - **Retries.** A Playwright retry must not draw a new answer in the same run. The run memo does this inside one process; a retry runs in a new worker process, so the matcher has to carry the memo across. This is open, together with the two cache items in §5.5.
 - **Choosing a decider.** Set once per project in config, and overridable per test file (`test.use({ decider: "kev" })`) or per assertion. The decider id and model are part of the cache key, so switching never reuses another model's decisions.
-- **`needs-review` policy.** Warn on pull requests, fail on the main branch, configurable. The config fields exist (§5.6); the matcher and reporter will apply them, reading the branch from the usual CI environment variables.
+- **Advisory by default.** A `fail` or `needs-review` from `toSatisfy` is reported and does not fail the build. Model-judged checks on user interfaces are not yet reliable enough to gate a merge unmeasured, so a project switches blocking on once it has numbers for its own app (roadmap step 4, and `eval` in §8.9). Exact assertions in code fail as usual.
+- **`needs-review` policy, once blocking is on.** Warn on pull requests, fail on the main branch, configurable. The config fields exist (§5.6); the matcher and reporter will apply them, reading the branch from the usual CI environment variables.
 - **`report.json`.** Versioned. For each assertion: the verdict, the source (cache, review, decider or none), the reason for a miss, whether the snapshot was cut, and the decider and model. An agent should be able to act on it without reading logs.
 
-### 8.3 Integrity (step 4)
+### 8.4 The app map and test fingerprints (step 5)
+
+Jevy cannot judge whether a test is worth having without knowing the app and what is already covered. Neither needs a model.
+
+- **App map.** Routes, pages and API endpoints read from the codebase by parsing, never by running it, and written to a file a person can read. The project marks critical areas in config, for example login, payments and wallet signing.
+- **Test fingerprint.** Recorded from a real run of each test: the pages it visits, the elements it interacts with (role and name), what it asserts, the endpoints it calls, and the client code it executes (Chromium's JavaScript coverage, mapped back to source). Server-side code is not in the first version.
+- **Deterministic.** The fingerprint of an unchanged test must be identical across runs, or it cannot be compared. Volatile parts are normalised the same way snapshots are (§5.3).
+- **Coverage view.** Which parts of the map are covered, by which tests, and which critical areas no test touches.
+
+### 8.5 Tests that earn their place (step 6)
+
+An admission check between "a test was proposed" and "the test joins the suite". It applies to a test an agent writes and to one a person writes.
+
+- **A plan a person approves.** Every test traces to one line in a short plan that says what the test protects and why. The plan is a protected path (§8.1). A person approves the plan, not each test. This is where intent comes from: an agent can write a check that describes whatever the code does today, bugs included, and a plan line a person approved is the counterweight.
+- **No duplicates.** A proposed test whose fingerprint adds nothing to the suite is rejected, and the tests that already cover it are named.
+- **No bloat.** A test is admitted only if it covers something uncovered, or catches a planted bug that no existing test catches.
+- **A mutation gate, scoped to the change.** Small bugs (mutants) are planted in the changed code only. A new or changed test must fail on at least one. A decider discards mutants that change nothing observable; that judgement is a cached, gated decision like any other (§5.5). The mutation tool is not chosen; Stryker is a candidate *(not yet evaluated)*.
+- **Pruning.** `jevy suite` lists existing tests that add no coverage and catch no planted bug, with what each one costs to run.
+- **What it cannot do.** It cannot decide alone what is worth covering. A person names the critical areas and approves the plan; the check makes that review small.
+
+### 8.6 Planner, generator and healer (step 7)
+
+Playwright ships these three agents as short prompt files run by the developer's coding agent, with a tool server. Its planner is told to aim for comprehensive coverage and is not told to look at the existing tests or the codebase. Its healer may change assertions and expected values, and may mark a test as skipped. Jevy ships its own versions, built the same way (definitions plus a tool server, no model loop inside Jevy), with the rules built in.
+
+- **Planner.** Reads the app map and the coverage view first (§8.4). It proposes plan lines only for what is missing, critical areas and changed code first, and says why each is not already covered.
+- **Generator.** Writes a plain Playwright test from an approved plan line. Anything numeric becomes an exact assertion; an outcome that needs judgement becomes `toSatisfy`. Then the admission check runs (§8.5).
+- **Healer.** No quiet healing. It proposes a fix as a unified diff, and the test keeps failing until a person approves it. Jevy builds the candidates for a broken locator from the snapshot (at most 255, the choice limit) and a decider picks one. A fix that only points a locator at the same element is marked low risk. A fix that changes what is checked, loosens a statement or adds a skip is reported by the guard as weakening.
+- **Tools.** Run a check, read the report, explain a miss, read the app map and coverage, run the admission check, list locator candidates, propose a fix as a diff.
+- **`jevy init --yes`.** Non-interactive setup of the hooks, the skill file, the agents and the config, with no hosted key required. An `llms.txt` indexes the docs.
+
+### 8.7 The report page and the proof bundle (step 8)
+
+One set of facts, in a form for people and a form for machines.
+
+- **Report page.** A static page generated by each run, opened locally or published from CI. Jevy hosts nothing. For each test it shows what the test protects (its plan line), each step in plain words with what it checks, a screenshot per step with the element highlighted, the pages and code it covers, the source of each verdict, and its history of passes, failures and flakes. Wallet steps appear like any other step.
+- **Steps in plain words** are derived from the test's own code and its recorded run, not written by a model, so the page cannot say something the test does not do.
+- **History** needs a store that outlives one CI run. Where it lives is open (OPEN-QUESTIONS item 8).
+- **Screenshots** stay out of git and are never sent to a model. Secret fields are masked before capture (§6). A screenshot can still show personal data, so the page is treated like any other CI artifact.
+- **Proof bundle.** One signed file per pull request: the commit, what ran, the results, the guard's findings, the admission results and the mutation score. A reviewer reads it instead of re-running everything. The format is Jevy's own until a cross-vendor one exists.
+
+### 8.8 Integrity (step 9)
 
 - **`jevy cache verify`.** PR CI in `replay` trusts the records in the tree, and the key is computable from public inputs, so a record can be forged. In a trusted CI job, `verify` re-asks the decider about records added or changed in the pull request and fails on disagreement. Unchanged records still cost nothing.
-- **Approvals an agent cannot grant itself.** `reviewedBy` is honoured only when the commit that adds it passes a project-defined check, for example CODEOWNERS on the cache directory. Until then the guard reports every added approval as weakening.
-- **The guard runs in CI by default,** next to the tests.
+- **Approvals an agent cannot grant itself.** There is one rule for every approval a person gives: a plan line (§8.5), a healer's fix (§8.6), and a `needs-review` verdict (`reviewedBy` in the cache). It is honoured only when the commit that adds it passes a project-defined check, for example CODEOWNERS. Until then the guard reports every added approval as weakening.
+- **The guard and the admission check run in CI by default,** next to the tests.
 - **Housekeeping.** `jevy cache ls`, `prune` (records are append-only, so superseded ones accumulate) and `stats`.
 
-### 8.4 Eval (step 5)
+### 8.9 Eval (step 10)
 
 **Command.** `jevy eval --cases eval/cases.jsonl --deciders llm,kev,jev [--repeat 3]`
 
@@ -407,15 +464,7 @@ declare function llmDecider(opts: { adapter: LlmAdapter; model: string }): Decid
 
 **Why it's mandatory.** Red Hat's benchmark of Jev-1.13.0 (2 Oct 2026) found decision models "do not reliably outperform LLM-as-a-judge … in speed or accuracy" on guardrail tasks. That result is disputed on HN, and guardrail tasks aren't testing tasks, so a project should use whichever decider wins on its own cases.
 
-### 8.5 Agent surface (step 6)
-
-- **A skill file and `llms.txt`,** so a coding agent can set Jevy up and use it correctly.
-- **`jevy init --yes`.** Non-interactive, and no hosted key required.
-- **An MCP server** with tools to run a check, read the report, explain a miss, list candidates for a broken locator, and propose a repair as a diff.
-- **Recording a flow** is the developer's agent writing an ordinary Playwright spec with these tools. Jevy does not plan the steps. Semantic outcomes become `toSatisfy` lines; anything numeric becomes an exact assertion.
-- **Repairing a locator.** Jevy builds the candidates from the snapshot (at most 255, the choice limit), a decider picks one, and the result is a unified diff. The source file is never edited by Jevy, and the test still fails or is `needs-review` until a person or the agent applies the diff, under the guard.
-
-### 8.6 Web3 wallet pack (step 7)
+### 8.10 Web3 wallet pack (step 11)
 
 ```ts
 type WalletPromptKind =
@@ -444,11 +493,7 @@ type WalletPolicy = (p: { kind: WalletPromptKind; decoded: DecodedRequest }) => 
 
 **Demos** are recorded videos made outside the repo, on public web3 sites, with testnet funds only or with the signature rejected at the confirm screen. Never mainnet, and never a key that has held real funds. Each video states its date and Jevy version, and that Jevy is not affiliated with the site. A demo is a point-in-time recording and never gates CI.
 
-### 8.7 Tests that prove they test something (step 8)
-
-**Mutation gate.** A new or changed test must fail on at least one mutant of the code it covers. This is the check on agent-written tests: a test that cannot fail proves nothing. The mutation tool is not chosen; Stryker is a candidate *(not yet evaluated)*.
-
-**Properties and invariants.**
+### 8.11 Properties and invariants (step 12)
 
 1. An LLM proposes properties in plain English from types, docs, NatSpec and audits.
 2. They are translated into fast-check properties (TypeScript) or a Chimera-style shared suite (Foundry, Echidna, Medusa).
@@ -469,9 +514,10 @@ Echidna, Medusa and Halmos are AGPL-3.0, so they are invoked as external binarie
 
 - Records are appended, never overwritten. The last record for a key wins.
 - A changed page shows up as a miss with a reason. That is a reviewable signal, not a silent model call.
-- `jevy guard` runs next to the tests and needs no model (§7).
+- `jevy guard` runs next to the tests and needs no model (§7). The admission check will run there too (§8.5).
+- A `toSatisfy` result is advisory until the project switches blocking on (§8.3). Exact assertions fail the build as usual.
 - A scheduled job in `replay-or-query` refreshes decisions and opens a pull request with the updated cache. Opening the pull request is the project's own CI step.
-- The `needs-review` policy and `jevy cache verify` are planned (§8.2, §8.3).
+- The `needs-review` policy and `jevy cache verify` are planned (§8.3, §8.8).
 - **Cost.** At Jev's published $0.042 per million input tokens (output free), a refresh run is likely cheap. *(estimate; depends on page size and run count)*
 
 ## 10. Security and privacy
@@ -480,8 +526,9 @@ Echidna, Medusa and Halmos are AGPL-3.0, so they are invoked as external binarie
 - **Jev specifically.** Jev is a closed, hosted model served from the US. TypeSafe states customer data is not used for training, but zero data retention is enterprise-only. Project policy: Jev is acceptable for staging and public apps; for anything more sensitive use a local model.
 - **Redaction** runs before anything is hashed, sent or written, and fails closed (§5.4). It is a set of patterns, so it can miss a secret in a shape it does not know. Projects add rules for their own formats.
 - **What is stored.** A decision record holds the question, the answer, hashes and metadata. It never holds the page.
+- **Screenshots.** Only the planned report page takes them (§8.7). They stay out of git, are never sent to a model, and have secret fields masked. They can still show personal data, so the page is handled like any other CI artifact.
 - **Prompt injection.** Page content is untrusted input to the decider, and Jev's docs note it can be swayed by adversarial state. A decider can only answer within the options the code built. No decider output is ever executed as code. Wallet actions will go through the code policy, and an unknown prompt stops the run.
-- **The agent as adversary.** The agent that edits the code can also edit tests, config and cache records. The guard reports those edits today (§7). Checking that a record really came from a model, and that an approval came from a person, is planned (§8.3).
+- **The agent as adversary.** The agent that edits the code can also edit tests, config and cache records. The guard reports those edits today (§7). Checking that a record really came from a model, and that an approval came from a person, is planned (§8.8).
 - **Look-alike Jev domains.** Third-party sites such as jevtypesafeai.com, aijev.app, madewithjev.com and jevlaya.cc proxy the API or sell "instant hosted keys". Config accepts only `https://api.typesafe.ai`, Vercel AI Gateway and OpenRouter as a Jev base URL. The docs link only to typesafe.ai and docs.typesafe.ai.
 - **Keys.** API keys and wallet keys come from environment variables. Config holds the variable's name and rejects a value that looks like a secret. Keys are never written to the cache or a report. `.gitignore` covers `.env*`.
 - **Wallets.** Throwaway keys only, on a network the user configures. Mainnet signing is refused unless `allowMainnetSigning: true` is set, and the default policy stops a value-moving request without an allow rule.
@@ -491,9 +538,12 @@ Echidna, Medusa and Halmos are AGPL-3.0, so they are invoked as external binarie
 
 ## 11. Known risks
 
-- **Whole-page hashes may be too unstable.** In replay, a verdict is reused only when the page hashes the same, which makes it a snapshot test with a model as the approver. Prices, names and list contents change on real apps, and each change is a miss. Nothing has measured this yet. Roadmap step 3 does, and decides whether hashing must be scoped to the evidence the decider used.
+- **Whole-page hashes may be too unstable.** In replay, a verdict is reused only when the page hashes the same, which makes it a snapshot test with a model as the approver. Prices, names and list contents change on real apps, and each change is a miss. Nothing has measured this yet. Roadmap step 4 does, and decides whether hashing must be scoped to the evidence the decider used. Until then `toSatisfy` is advisory.
 - **Judge accuracy and calibration are unproven.** Calibration is disputed for Jev and unknown for LLM judges. The defaults 0.8 and 0.5 are placeholders until `eval` exists.
 - **The guard is mechanical.** It misses weakening it cannot see in the syntax, such as a removed `await` or an assertion inside a helper. The README lists the limits.
+- **Planting bugs is slow for browser tests.** Each planted bug means rebuilding the app and re-running tests. The mutation gate is scoped to changed code and to the tests whose fingerprint touches it; whether that is fast enough is unproven.
+- **"The right things to test" is not fully mechanical.** The admission check can show that a test adds nothing. It cannot show that the plan itself is the right plan; a person still approves that.
+- **Fingerprints must be stable.** If the fingerprint of an unchanged test differs between runs, duplicate detection and pruning give wrong answers.
 - **The snapshot source is narrow.** Playwright's aria snapshot leaves out link targets and several states (§6), so some real changes do not change the hash.
 - **Jev maturity and access.** It launched 15 Sep 2026 and is in early access; the HN thread reported that signups were closed. Many users and contributors will not have a key, so the project and its benchmark must work without Jev.
 - **Wallet automation is brittle.** Synpress documents headless issues. The mock provider is the default, and a real-extension driver is for smoke tests only.
