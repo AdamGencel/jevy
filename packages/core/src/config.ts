@@ -154,6 +154,21 @@ export interface JevyConfig {
   readonly redact?: readonly RedactRule[];
   readonly normalise?: NormaliseOverrides;
   readonly web3?: Web3Config;
+  /**
+   * Globs, relative to this file, that a coding agent must not change without
+   * a person. The config itself, the decision cache and `web3.policy` are
+   * always protected and need no entry.
+   */
+  readonly protect?: readonly string[];
+  /**
+   * The project's own check commands, for example `["pnpm lint", "pnpm test"]`.
+   * `jevy hook stop` runs them before an agent may finish.
+   */
+  readonly checks?: readonly string[];
+  readonly guard?: {
+    /** Globs for the files `jevy guard` compares as tests. */
+    readonly tests?: readonly string[];
+  };
 }
 
 export interface ResolvedJevDecider {
@@ -203,6 +218,10 @@ export interface ResolvedJevyConfig {
   readonly redact: readonly RedactRule[];
   readonly normalise: NormaliseOptions;
   readonly web3: ResolvedWeb3 | null;
+  readonly protect: readonly string[];
+  readonly checks: readonly string[];
+  /** `tests` is null when the guard's built-in test globs apply. */
+  readonly guard: { readonly tests: readonly string[] | null };
   readonly warnings: readonly string[];
 }
 
@@ -258,6 +277,9 @@ export function parseConfig(
     "redact",
     "normalise",
     "web3",
+    "protect",
+    "checks",
+    "guard",
   ]);
 
   const deciders = readDeciders(input["deciders"]);
@@ -269,6 +291,12 @@ export function parseConfig(
   const normalise = readNormalise(input["normalise"]);
   assertPlaceholdersSettle(redact, normalise);
   const web3Result = readWeb3(input["web3"]);
+  const protect = readGlobList(input["protect"], "protect") ?? [];
+  const checks =
+    input["checks"] === undefined
+      ? []
+      : readStringList(input["checks"], "checks");
+  const guard = readGuard(input["guard"]);
 
   const resolved: ResolvedJevyConfig = {
     decider,
@@ -279,6 +307,9 @@ export function parseConfig(
     redact,
     normalise,
     web3: web3Result.web3,
+    protect,
+    checks,
+    guard,
     warnings: web3Result.warnings,
   };
   assertChoiceAllowed(resolved);
@@ -910,6 +941,143 @@ function readWeb3(value: unknown): {
     web3: { driver, chain, account, policy, allowMainnetSigning },
     warnings,
   };
+}
+
+function readGuard(value: unknown): ResolvedJevyConfig["guard"] {
+  if (value === undefined) return { tests: null };
+  if (!isRecord(value)) throw new ConfigError("guard must be an object");
+  rejectUnknown(value, ["tests"], "guard");
+  const tests = readGlobList(value["tests"], "guard.tests");
+  // An empty list would compare no file as a test, which reads as "nothing
+  // was weakened". Leaving the key out is how a project asks for the default.
+  if (tests?.length === 0) {
+    throw new ConfigError("guard.tests must list at least one glob");
+  }
+  return { tests };
+}
+
+/**
+ * A list of globs, or null when the key is absent. The guard reads these
+ * lists from the source text and matches them itself, so the loader only
+ * refuses what that matcher cannot honour. A glob that silently matched
+ * nothing would leave a path unprotected with no sign of it.
+ */
+function readGlobList(value: unknown, path: string): readonly string[] | null {
+  if (value === undefined) return null;
+  const globs = readStringList(value, path);
+  globs.forEach((glob, index) => {
+    assertGlob(glob, `${path}[${String(index)}]`);
+  });
+  return globs;
+}
+
+/**
+ * Upper bound on the patterns one glob may expand to. `{a,b}{c,d}...`
+ * doubles with every group. The guard's matcher has the same bound.
+ */
+const MAX_GLOB_ALTERNATIVES = 256;
+
+type GlobAlternatives =
+  | { readonly ok: true; readonly alternatives: readonly string[] }
+  | { readonly ok: false; readonly problem: string };
+
+/** Expand `{a,b}` groups into every plain pattern they stand for. */
+function expandGlobBraces(glob: string): GlobAlternatives {
+  let alternatives: readonly string[] = [""];
+  let rest = glob;
+  for (;;) {
+    const open = rest.indexOf("{");
+    const close = rest.indexOf("}");
+    if (open === -1 && close === -1) {
+      return { ok: true, alternatives: alternatives.map((a) => a + rest) };
+    }
+    if (open === -1 || close < open) {
+      return { ok: false, problem: "has unbalanced braces" };
+    }
+    const body = rest.slice(open + 1, close);
+    if (body.includes("{")) {
+      return { ok: false, problem: "must not nest braces" };
+    }
+    const head = rest.slice(0, open);
+    const options = body.split(",");
+    if (alternatives.length * options.length > MAX_GLOB_ALTERNATIVES) {
+      return {
+        ok: false,
+        problem: `expands to more than ${String(MAX_GLOB_ALTERNATIVES)} alternatives`,
+      };
+    }
+    alternatives = alternatives.flatMap((a) =>
+      options.map((option) => a + head + option),
+    );
+    rest = rest.slice(close + 1);
+  }
+}
+
+/**
+ * What is wrong with one alternative of an expanded glob, or null. Where the
+ * glob starts is judged on the first segment after expansion: `{!a,b}`,
+ * `./!a` and `./C:x` each put a `!` or a drive letter first without the glob
+ * itself starting with one.
+ */
+function globAlternativeProblem(alternative: string): string | null {
+  const segments = alternative
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ".");
+  const first = segments[0] ?? "";
+  if (alternative.startsWith("/") || /^[A-Za-z]:/.test(first)) {
+    return "must be relative to the config file";
+  }
+  if (first.startsWith("!")) {
+    return "must not start with '!': negated globs are not supported";
+  }
+  if (segments.includes("..")) return "must stay inside the project";
+  if (segments.some((segment) => segment !== "**" && segment.includes("**"))) {
+    return "must use ** as a whole path segment";
+  }
+  return segments.length === 0 ? "names no path" : null;
+}
+
+/** What is wrong with `glob`, or null when the guard's matcher honours it. */
+function globProblem(glob: string): string | null {
+  if (glob !== glob.trim()) return "must not start or end with whitespace";
+  if (glob.includes("\\")) return "must use forward slashes";
+  if (glob.includes("[") || glob.includes("]")) {
+    return "must not use a character class ([...]): use ? for one character";
+  }
+  if (/[@+?*!]\(/.test(glob)) {
+    return "must not use an extended glob group such as @(a|b): use {a,b}";
+  }
+  if (glob.includes("|")) {
+    return "must not contain '|': use {a,b} for alternatives";
+  }
+  const expanded = expandGlobBraces(glob);
+  if (!expanded.ok) return expanded.problem;
+  for (const alternative of expanded.alternatives) {
+    const problem = globAlternativeProblem(alternative);
+    if (problem !== null) return problem;
+  }
+  return null;
+}
+
+/**
+ * Throws for a glob the guard could not honour.
+ *
+ * The guard's matcher is `checkGlob` in `@jevyjs/cli` (`guard/glob.ts`). The
+ * CLI must not depend on core and core cannot import the CLI, so the rule is
+ * written twice on purpose, here and there. The two must refuse exactly the
+ * same globs: a glob accepted here and refused there would make the guard
+ * and the hooks fail on a config that loads. The table of globs in
+ * `config.test.ts` and in the CLI's `glob.test.ts` holds the two together.
+ * Change one and you change the other.
+ *
+ * The matcher reads a glob as literal segments, `*` and `?` within a segment,
+ * `**` as a whole segment, and `{a,b}`. Syntax another glob library gives a
+ * meaning to (`[ab]`, `@(a|b)`, `!x`) is refused, because read as literal
+ * text it would match nothing.
+ */
+function assertGlob(glob: string, path: string): void {
+  const problem = globProblem(glob);
+  if (problem !== null) throw new ConfigError(`${path} ${problem}`);
 }
 
 function readChain(value: unknown): ResolvedWeb3["chain"] {

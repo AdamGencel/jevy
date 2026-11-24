@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: early, not yet on npm.** What works today, from a clone of this repo: `jevy guard`, the decision layer in `@jevyjs/core` (three verdicts, snapshot hashing, redaction, the decision cache with replay), and the Playwright snapshot bridge. The agent hooks, the `toSatisfy` matcher, the admission check for new tests, the planner, generator and healer, the report page, `eval` and the wallet pack are planned and marked as such below. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
+> **Status: early, not yet on npm.** What works today, from a clone of this repo: `jevy guard`, the agent hooks and protected paths, the decision layer in `@jevyjs/core` (three verdicts, snapshot hashing, redaction, the decision cache with replay), and the Playwright snapshot bridge. The `toSatisfy` matcher, the admission check for new tests, the planner, generator and healer, the report page, `eval` and the wallet pack are planned and marked as such below. Only a placeholder `@jevyjs/cli` 0.0.1 is on npm. Design: [docs/DESIGN.md](docs/DESIGN.md) · Plan: [docs/ROADMAP.md](docs/ROADMAP.md) · Undecided: [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)
 
 Coding agents now write much of the code and many of the tests. A written test is no longer the scarce thing. A result you can trust is. **Jevy is an open-source test framework for teams whose code and tests are mostly written by coding agents.** It runs on Playwright, and does six jobs:
 
@@ -31,9 +31,11 @@ Nothing is published yet, so these run from a clone (`pnpm install && pnpm build
 
 A coding agent that writes the code also edits the tests, and the quickest way to turn a failing test green is to weaken it. `jevy guard` compares two versions of your repo and lists every change that could weaken your checks, so a person can review them. It does not call a model. It parses files with the TypeScript compiler and never runs code from your repo.
 
-    jevy guard --base origin/main               # compare the working tree, untracked files included
-    jevy guard --base origin/main --head HEAD   # compare two commits
-    jevy guard --base origin/main --json        # machine-readable output
+    jevy guard --base origin/main --merge-base               # the working tree against where this branch started
+    jevy guard --base origin/main --merge-base --head HEAD   # the same, for a commit
+    jevy guard --base origin/main --merge-base --json        # machine-readable output
+
+Without `--head` the guard checks the working tree, untracked files included, and the index as well, so a weakened test that is staged and then restored on disk is still seen.
 
 What it catches:
 - **Weakening, which fails by default.** It catches:
@@ -46,10 +48,14 @@ What it catches:
   - a lower `thresholds.pass`
   - `ci.needsReview.pr` or `.main` moved from `"fail"` to `"warn"`
   - a decision-cache line added with a non-null `reviewedBy`. Approvals must be made by a human.
+  - a new or changed test with no assertion, or whose every assertion cannot fail (`expect(true).toBe(true)`, `expect(total).toEqual(total)`)
+  - a change to a protected path (see below)
 - **Review, which does not fail by default.** It flags:
   - a changed `toSatisfy` statement
   - a changed matcher, a changed literal argument, or an added `.not`
   - a changed test whose title is not a string literal
+  - a new or changed test with no visible assertion that calls something the guard cannot read, such as an imported helper or a page object
+  - a new or changed test that only checks mocks it created and called itself
   - a changed `.each` table
   - changed `redact`, `normalise` or `decider` settings, and any other config change
   - raised Playwright `retries`, or changed test selection (`testIgnore`, `testMatch`, `grep` and similar)
@@ -59,13 +65,27 @@ What it catches:
 
 Reformatting, comments, reordered imports or tests, and renamed variables produce no findings.
 
-Options: `--fail-on weakening|review|never` (default `weakening`), `--cache-dir <dir>` (default `.jevy/decisions`), `--cwd <dir>`.
+Options:
+
+- `--merge-base` compares against the commit where `--head` branched from `--base`, not the tip of `--base`. Without it, tests added to the target branch after yours started look like tests you removed. It needs full history.
+- `--tests <glob>` (repeatable) names the files compared as tests. The default is `**/*.{spec,test}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`. Files under `node_modules` and `dist` are never tests.
+- `--fail-on weakening|review|never` (default `weakening`).
+- `--cache-dir <dir>` (default: `cache.dir` in the config, else `.jevy/decisions`).
+- `--cwd <dir>`.
+
+Settings in `jevy.config.*` are read as text; the file is never run. The guard reads `guard.tests`, `cache.dir`, `protect` and `web3.policy` from the **base** version of the config when it exists there, so a change cannot redefine what it is checked against. A value the guard cannot read as a literal (a variable from another file, a function call) stops it with exit code 2.
+
+**Protected paths** are files an agent must not change without a person. Always protected, with no setup: every `jevy.config.*`, the decision cache directory, and the file named by `web3.policy`. Add your own with `protect`, for example a test plan or the tests for payments:
+
+    protect: ["docs/test-plan.md", "tests/payments/**"],
+
+The guard reports any added, changed, deleted or renamed protected file as `protected-path-changed`, which is weakening. So every edit to `jevy.config.*` now needs a person's review. Decision records are the exception: a test run writes them, so the guard compares them record by record as before. Matching ignores case, because macOS and Windows disks do. Globs support `*`, `**`, `?` and `{a,b}`, and a glob that names a directory covers everything in it.
 
 Exit codes: `0` nothing at or above `--fail-on`; `1` something is; `2` usage or git error (unknown ref, not a git repo).
 
-In CI, run it next to your tests on every pull request. Compare against the merge base, not the tip of the target branch; otherwise tests added to the target after your branch started look like tests you removed. Fetch full history first (`fetch-depth: 0`):
+In CI, run it next to your tests on every pull request, with `--merge-base`. Fetch full history first (`fetch-depth: 0`):
 
-    - run: npx jevy guard --base "$(git merge-base origin/${{ github.base_ref }} HEAD)" --head HEAD
+    - run: npx jevy guard --base origin/${{ github.base_ref }} --merge-base --head HEAD
 
 JSON (`--json`) prints exactly one document. The schema is versioned by `v`. Findings are sorted by file, then line, then kind, so the output is byte-identical across runs:
 
@@ -76,9 +96,35 @@ JSON (`--json`) prints exactly one document. The schema is versioned by `v`. Fin
         "message": "checkout > pays by card has 1 fewer assertion (2 -> 1): removed toHaveText",
         "before": "expect(…).toHaveText(\"Paid\")" } ] }
 
-`head` is `"working-tree"` when `--head` is omitted. `test`, `line`, `before` and `after` appear only when they apply. `line` is the line in the head version, or in the base version when the thing it points to is gone.
+`head` is `"working-tree"` when `--head` is omitted. `mergeBase` holds the commit compared against when `--merge-base` is given. `test`, `line`, `before` and `after` appear only when they apply. `line` is the line in the head version, or in the base version when the thing it points to is gone.
 
-Known limits. It is a mechanical check, so it does not see: a removed `await` in front of an `expect`; assertions inside helper functions or a custom `expect` wrapper; a changed subject or argument that is not a literal; an early `return` or a `try`/`catch` around assertions; tests in files outside the default test globs; a decision record edited in place, which shows as one removal and one addition for review. A test with a non-literal title is only ever flagged for review.
+Known limits. It is a mechanical check, so it does not see: a removed `await` in front of an `expect`; a removed assertion inside a helper function in another file or a custom `expect` wrapper; a changed subject or argument that is not a literal; an early `return` or a `try`/`catch` around assertions; tests in files outside the test globs; a test weakened inside a git submodule; an edit hidden from git by a forged file timestamp (the working-tree comparison trusts git's own change detection; comparing commits does not have this gap); a decision record edited in place, which shows as one removal and one addition for review. A test with a non-literal title is matched only for review.
+
+The check for weak new tests reads one file. An assertion in an imported helper, a page object or a custom fixture is "not visible" and is flagged for review, never as weakening. It does not follow dead code, so `if (false) expect(...)` counts as an assertion. Settings are read from the `jevy.config.*` in the directory the guard runs in; a config in another directory of a monorepo is protected as a file, but its `protect` list applies only when the guard runs there (`--cwd`).
+
+### Agent hooks
+
+The guard reports a weakened test after the fact. The hooks stop it inside a coding agent's session. They are for Claude Code today.
+
+    jevy hook print --agent claude   # the settings snippet; paste it into .claude/settings.json
+
+The snippet wires three commands:
+
+- **`jevy hook stop`** runs before the agent may say it is done. It runs each command in your config's `checks` list, then `jevy guard` twice: the branch against the default branch (`--merge-base`), and the session against the commit it started on. If a check fails or the guard finds weakening, the hook exits with code 2, and Claude Code hands the reason to the agent and keeps it working.
+- **`jevy hook pre-edit`** runs before each file edit and blocks one that targets a protected path, with a message telling the agent to ask you.
+- **`jevy hook session-start`** records the commit the session starts on, so the stop hook also sees what the agent commits.
+
+Name your real checks in the config. The config is a protected path, so an agent cannot quietly empty the list:
+
+    checks: ["pnpm lint", "pnpm typecheck", "pnpm test"],
+
+The stop hook does not let an agent spin. After two blocked attempts in a row for the same reason, the third lets it stop and shows you what still fails. It also stops blocking after six blocks in one run, and it has an overall time limit (`--deadline`, 1500 seconds by default; `--timeout`, 300 seconds per check), because Claude Code lets an agent proceed when a hook times out.
+
+Both hooks read the config as text and never run it. They fail closed: a config they cannot read, a hook input they cannot parse, or an internal error blocks with exit code 2, since any other exit code would let the action through.
+
+Known limits. The hooks make weakening hard to do by accident; they are not a sandbox. A change you make to the config yourself during a session keeps blocking the agent until the next session starts, because the hook cannot tell your edit from the agent's. An edit made through a shell command does not pass through the pre-edit hook; the stop hook's guard reports it afterwards. An agent that edits its own settings can remove the hooks, so add `.claude/settings.json` to `protect` if you want the guard to report that. The guard in CI, run from a clean checkout, is the check an agent cannot reach.
+
+A short skill file for agents ships in the package at `skill/SKILL.md`: the exact commands and the rules, in 30 lines.
 
 ### The decision layer and the snapshot bridge
 
@@ -119,8 +165,6 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 ## What is planned
 
 In roadmap order. Everything in this section is intended usage and will change. [docs/ROADMAP.md](docs/ROADMAP.md) says why the steps are in this order.
-
-**The guard inside the agent's loop (step 2).** Hooks for coding agents: a stop hook runs your real test, type-check and lint commands plus `jevy guard` before the agent may say it is done, and a pre-edit hook protects the paths you list (test plans, config, the decision cache, chosen tests). The guard also learns to flag a new test that checks nothing.
 
 **A semantic assertion in Playwright (step 3).** The first ready-made decider is a generic adapter for any LLM you plug in, so nobody needs a particular vendor's key.
 
@@ -172,6 +216,9 @@ export default defineConfig({
   cache: { dir: ".jevy/decisions" }, // replay when CI is set, record otherwise
   ci: { needsReview: { pr: "warn", main: "fail" } },
   redact: [/ORDER-\d+/],
+  protect: ["docs/test-plan.md", "tests/payments/**"], // an agent must not change these without a person
+  checks: ["pnpm lint", "pnpm typecheck", "pnpm test"], // what `jevy hook stop` runs
+  guard: { tests: ["e2e/**/*.ts", "**/*.spec.ts"] }, // files `jevy guard` compares as tests
 });
 ```
 
@@ -205,7 +252,7 @@ The last column says what is implemented today.
 |---|---|---|
 | `@jevyjs/core` | Decider contract, verdicts, snapshot hashing, redaction, pruning, decision cache, config | Implemented |
 | `@jevyjs/playwright` | Page snapshots; later the `toSatisfy` matcher, test fingerprints and the report page | Snapshots only |
-| `@jevyjs/cli` | The `jevy` command: `guard`; later the hooks, the app map, admission, the agents, `cache`, `eval`, `init` | `guard` only |
+| `@jevyjs/cli` | The `jevy` command: `guard` and `hook`; later the app map, admission, the agents, `cache`, `eval`, `init` | `guard` and `hook` |
 | `@jevyjs/deciders-llm` | Generic adapter for any LLM | Stub |
 | `@jevyjs/deciders-jev` | TypeSafe AI Jev adapter | Stub |
 | `@jevyjs/deciders-kev` | Kev (local, open-weight) adapter | Stub |

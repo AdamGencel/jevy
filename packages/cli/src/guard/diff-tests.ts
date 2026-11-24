@@ -13,11 +13,13 @@ import {
   type ParsedTestFile,
 } from "./parse.js";
 import type { Finding } from "./types.js";
+import { weakTestFinding } from "./weak-tests.js";
 
 /**
  * Compares two versions of one test file. Tests are matched by title path,
  * so moving a test or reformatting it is not a change, while deleting it,
- * skipping it or dropping one of its assertions is.
+ * skipping it or dropping one of its assertions is. A test that is new, or
+ * whose body changed, is also checked on its own: does it check anything?
  */
 
 export interface TestFileChange {
@@ -215,6 +217,12 @@ function diffMarkers(at: Where, before: Markers, after: Markers): Finding[] {
   return out;
 }
 
+/** The weak-test finding for the head version of a test, if it has one. */
+function weakFindings(file: string, test: ParsedTest): Finding[] {
+  const found = weakTestFinding(file, test);
+  return found === null ? [] : [found];
+}
+
 function diffMatched(
   file: string,
   before: ParsedTest,
@@ -222,6 +230,11 @@ function diffMatched(
 ): Finding[] {
   const at = where(file, after);
   const out = diffMarkers(at, before.markers, after.markers);
+  // The guard reports what a change did: a test nobody touched is left
+  // alone however weak it is, and a touched one is judged as it now stands.
+  // A formatter's edit (a semicolon, a trailing comma) is not a touch.
+  const weak =
+    before.fingerprint === after.fingerprint ? [] : weakFindings(file, after);
   if (before.dynamic || after.dynamic) {
     if (before.body !== after.body || before.cases !== after.cases) {
       out.push(
@@ -234,7 +247,7 @@ function diffMatched(
         }),
       );
     }
-    return out;
+    return [...out, ...weak];
   }
   if (before.cases !== after.cases) {
     out.push(
@@ -249,7 +262,11 @@ function diffMatched(
       }),
     );
   }
-  return [...out, ...diffAssertions(at, before.assertions, after.assertions)];
+  return [
+    ...out,
+    ...diffAssertions(at, before.assertions, after.assertions),
+    ...weak,
+  ];
 }
 
 /** Key a test by title path; repeated titles get an occurrence number. */
@@ -288,7 +305,9 @@ function addedFindings(file: string, test: ParsedTest): Finding[] {
       }),
     );
   }
-  return out;
+  // A new test that is skipped is reported as such above; what its body
+  // checks is judged when the skip comes off, as for `it.todo`.
+  return test.markers.skip > 0 ? out : [...out, ...weakFindings(file, test)];
 }
 
 function removedFinding(file: string, test: ParsedTest): Finding {

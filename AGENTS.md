@@ -59,3 +59,5 @@ All four of lint, typecheck, build and test must pass before work is called done
 - Agent worktrees under `.claude/worktrees/` made ESLint run out of memory. The folder is ignored now; remove finished worktrees.
 - Playwright has no `page.accessibility`. Snapshots come from `ariaSnapshot()` through `packages/playwright`. That output prints password values in clear, which is why the bridge blanks secret fields.
 - Screenshots are never sent to a model and never committed.
+- A Claude Code hook blocks only with exit code 2. Exit code 1, a crash or a timeout lets the action through, so a hook that means to block must end in exit 2 inside a deadline.
+- `git diff` in the working tree trusts the index. A staged change restored on disk, or a file flagged `skip-worktree`, is invisible to it; the guard checks the index and those flags itself.

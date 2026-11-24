@@ -73,6 +73,28 @@ describe("formatJson", () => {
     );
   });
 
+  it("puts mergeBase right after head, and only when there is one", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    const report = buildReport("main", "HEAD", [], sha);
+    expect(Object.keys(report)).toEqual([
+      "v",
+      "tool",
+      "base",
+      "head",
+      "mergeBase",
+      "summary",
+      "findings",
+    ]);
+    expect(report.base).toBe("main");
+    expect(report.mergeBase).toBe(sha);
+    expect(formatJson(report)).toContain(
+      `  "head": "HEAD",\n  "mergeBase": "${sha}",\n  "summary"`,
+    );
+    expect(Object.keys(buildReport("main", "HEAD", []))).not.toContain(
+      "mergeBase",
+    );
+  });
+
   it("is byte-identical whatever order the findings arrive in", () => {
     const a = formatJson(buildReport("main", "HEAD", FINDINGS));
     const b = formatJson(buildReport("main", "HEAD", [...FINDINGS].reverse()));
@@ -121,6 +143,52 @@ describe("formatHuman", () => {
       "1 weakening, 0 review, 0 info",
       "",
     ]);
+  });
+
+  it("escapes the controls that reorder or hide text on a terminal", () => {
+    const hidden = [
+      "\u0085",
+      "\u009b",
+      "\u2028",
+      "\u2029",
+      "\u202a",
+      "\u202e",
+      "\u2066",
+      "\u2069",
+      "\u200e",
+      "\u200f",
+      "\u061c",
+    ];
+    const crafted = finding({
+      kind: "test-removed",
+      file: `a${hidden.join("")}b.spec.ts`,
+      line: 1,
+      message: "gone\u202e gninekaew 0",
+    });
+    const text = formatHuman(buildReport("main", "HEAD", [crafted]));
+    for (const char of hidden) {
+      expect(text).not.toContain(char);
+    }
+    expect(text.split("\n").slice(2, 4)).toEqual([
+      "a\\u0085\\u009b\\u2028\\u2029\\u202a\\u202e\\u2066\\u2069\\u200e\\u200f\\u061cb.spec.ts",
+      "  weakening  test-removed  line 1  gone\\u202e gninekaew 0",
+    ]);
+    // Ordinary text outside ASCII is left as it is.
+    const plain = finding({
+      kind: "test-removed",
+      file: "zażółć/日本.spec.ts",
+      message: "é — 🙂",
+    });
+    const shown = formatHuman(buildReport("main", "HEAD", [plain]));
+    expect(shown).toContain("zażółć/日本.spec.ts\n");
+    expect(shown).toContain("é — 🙂");
+  });
+
+  it("names the merge base in the header line", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    expect(formatHuman(buildReport("main", "feature", [], sha))).toBe(
+      `jevy guard: main..feature (merge base ${sha})\n\nNo findings.\n`,
+    );
   });
 
   it("says so when there is nothing to report", () => {

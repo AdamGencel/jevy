@@ -8,6 +8,20 @@ import {
   stringValue,
   unwrap,
 } from "./source.js";
+import {
+  NO_SCOPE,
+  constantOutcome,
+  formatFingerprint,
+  readFileFacts,
+  readTestBody,
+  subjectRoot,
+  type AssertionParts,
+  type AssertionScope,
+  type BodyEvidence,
+  type ConstantOutcome,
+  type FileFacts,
+  type FixedResult,
+} from "./weak-tests.js";
 
 /**
  * Turns the text of a test file into a model of its tests and assertions.
@@ -37,6 +51,15 @@ export interface ParsedAssertion {
   readonly args: readonly (string | null)[];
   /** The statement of a `toSatisfy` call. */
   readonly statement?: string;
+  /**
+   * Set when the outcome is fixed whatever the code under test does. Read by
+   * the weak-test rules only: comparing two versions never looks at it.
+   */
+  readonly constant: ConstantOutcome | null;
+  /** Whether a constant assertion passes, as far as the guard can tell; null when it is not constant. */
+  readonly result: FixedResult | null;
+  /** The variable the value under test is read from, for the mock rule. */
+  readonly subjectRoot: string | null;
   readonly line: number;
 }
 
@@ -48,11 +71,23 @@ export interface ParsedTest {
   readonly line: number;
   /** Normalised source of the test function, or null for `it.todo`. */
   readonly body: string | null;
+  /**
+   * The body with what a formatter decides taken out, or null for `it.todo`.
+   * Read by the weak-test rules only, to tell a changed test from a
+   * reformatted one: every other comparison uses `body`.
+   */
+  readonly fingerprint: string | null;
   /** Normalised `.each` tables of the test and its describes, or null. */
   readonly cases: string | null;
   /** Markers of the test plus those of every enclosing describe and the file. */
   readonly markers: Markers;
   readonly assertions: readonly ParsedAssertion[];
+  /**
+   * What the body shows beyond its own assertions, or null for `it.todo`.
+   * Read by the weak-test rules only: it holds names from the source, so a
+   * renamed variable changes it, and comparing two versions must not use it.
+   */
+  readonly evidence: BodyEvidence | null;
 }
 
 export interface ParsedTestFile {
@@ -87,9 +122,13 @@ interface TestBuilder {
   readonly dynamic: boolean;
   readonly line: number;
   readonly body: string | null;
+  readonly fingerprint: string | null;
   readonly cases: string | null;
   readonly markers: MutableMarkers;
   readonly assertions: ParsedAssertion[];
+  readonly evidence: BodyEvidence | null;
+  /** The names of the test function that an assertion on constants can use. */
+  readonly names: AssertionScope;
 }
 
 interface Context {
@@ -107,6 +146,8 @@ type CallInfo =
     }
   | {
       readonly type: "test";
+      /** The name the chain starts with: `test`, `it`, `xit`. */
+      readonly root: string;
       readonly title: ts.Expression;
       readonly fn: ts.Expression | undefined;
       readonly markers: readonly MarkerName[];
@@ -277,7 +318,14 @@ function classifyTest(
   if (fn === undefined && !chain.members.includes("todo")) {
     return null;
   }
-  return { type: "test", title, fn, markers, cases: chain.cases };
+  return {
+    type: "test",
+    root: chain.root,
+    title,
+    fn,
+    markers,
+    cases: chain.cases,
+  };
 }
 
 function classify(
@@ -307,11 +355,13 @@ function classify(
   return classifyTest(call, chain, testMarker);
 }
 
+/** The parts of an assertion as they stand in the source, before any is judged. */
+interface AssertionChain extends AssertionParts {
+  readonly soft: boolean;
+}
+
 /** Read `expect(x)[.not|.resolves|.rejects]*.matcher(args)` and its soft and poll forms. */
-function readAssertion(
-  call: ts.CallExpression,
-  sourceFile: ts.SourceFile,
-): ParsedAssertion | null {
+function readChainParts(call: ts.CallExpression): AssertionChain | null {
   const callee = call.expression;
   if (!ts.isPropertyAccessExpression(callee)) {
     return null;
@@ -354,8 +404,32 @@ function readAssertion(
   } else {
     return null;
   }
-  const subjectNode = node.arguments[0];
+  return {
+    matcher,
+    soft,
+    negated,
+    modifiers,
+    subject: node.arguments[0],
+    args: call.arguments,
+  };
+}
+
+/**
+ * Read one assertion into the model. `names` are those of the test function
+ * it stands in, which decide whether `expect(a).toBe(5)` is on constants.
+ */
+function readAssertion(
+  call: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+  names: AssertionScope,
+): ParsedAssertion | null {
+  const parts = readChainParts(call);
+  if (parts === null) {
+    return null;
+  }
+  const { matcher, soft, negated, modifiers, subject: subjectNode } = parts;
   const first = call.arguments[0];
+  const constant = constantOutcome(parts, names);
   const base = {
     matcher,
     soft,
@@ -363,6 +437,9 @@ function readAssertion(
     modifiers,
     subject: subjectNode === undefined ? null : literalText(subjectNode),
     args: call.arguments.map((arg) => literalText(arg)),
+    constant: constant?.outcome ?? null,
+    result: constant?.result ?? null,
+    subjectRoot: subjectRoot(subjectNode),
     line: lineOf(call, sourceFile),
   };
   if (matcher === "toSatisfy" && first !== undefined) {
@@ -423,6 +500,7 @@ function emptyMarkers(): MutableMarkers {
 function walk(
   root: ts.SourceFile,
   sourceFile: ts.SourceFile,
+  facts: FileFacts,
 ): { tests: TestBuilder[]; loose: ParsedAssertion[] } {
   const tests: TestBuilder[] = [];
   const loose: ParsedAssertion[] = [];
@@ -459,6 +537,9 @@ function walk(
         const title = titleOf(info.title, sourceFile);
         const markers = emptyMarkers();
         addMarkers(markers, info.markers);
+        const shape = { root: info.root, rows: info.cases !== null };
+        const reading =
+          info.fn === undefined ? null : readTestBody(info.fn, shape, facts);
         const test: TestBuilder = {
           scope: context.scope,
           titlePath: [...context.scope.titlePath, title.text],
@@ -466,9 +547,15 @@ function walk(
           line: lineOf(node, sourceFile),
           body:
             info.fn === undefined ? null : normaliseCode(info.fn, sourceFile),
+          fingerprint:
+            info.fn === undefined
+              ? null
+              : formatFingerprint(info.fn, sourceFile),
           cases: joinCases([...scopeCases(context.scope), info.cases]),
           markers,
           assertions: [],
+          evidence: reading?.evidence ?? null,
+          names: reading?.scope ?? NO_SCOPE,
         };
         tests.push(test);
         if (info.fn !== undefined) {
@@ -480,7 +567,11 @@ function walk(
         const target = context.test?.markers ?? context.scope.markers;
         target[info.marker] += 1;
       }
-      const assertion = readAssertion(node, sourceFile);
+      const assertion = readAssertion(
+        node,
+        sourceFile,
+        context.test?.names ?? NO_SCOPE,
+      );
       if (assertion !== null) {
         (context.test?.assertions ?? loose).push(assertion);
       }
@@ -501,7 +592,8 @@ export function parseTestFile(text: string, path: string): TestFileParse {
     return parsed;
   }
   const { sourceFile } = parsed;
-  const { tests, loose } = walk(sourceFile, sourceFile);
+  const facts = readFileFacts(sourceFile, readChainParts);
+  const { tests, loose } = walk(sourceFile, sourceFile, facts);
   return {
     ok: true,
     value: {
@@ -510,9 +602,11 @@ export function parseTestFile(text: string, path: string): TestFileParse {
         dynamic: test.dynamic,
         line: test.line,
         body: test.body,
+        fingerprint: test.fingerprint,
         cases: test.cases,
         markers: effectiveMarkers(test),
         assertions: test.assertions,
+        evidence: test.evidence,
       })),
       looseAssertions: loose,
     },

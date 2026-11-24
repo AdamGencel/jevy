@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { diffJevyConfig, diffPlaywrightConfig } from "./diff-config.js";
+import { SEVERITY } from "./findings.js";
+import { buildReport, formatHuman } from "./report.js";
 import type { Finding } from "./types.js";
 
 const JEVY = `import { defineConfig } from "@jevyjs/core";
@@ -94,6 +96,102 @@ describe("diffJevyConfig", () => {
         before: '"replay"',
         after: "process.env.MODE",
       },
+    ]);
+  });
+
+  it("reports a changed protect list as a protected path change", () => {
+    const listed = JEVY.replace(
+      "  thresholds:",
+      '  protect: ["tests/critical/**", "docs/plan.md"],\n  thresholds:',
+    );
+    const shorter = listed.replace(', "docs/plan.md"', "");
+    expect(jevy(listed, shorter)).toEqual([
+      {
+        kind: "protected-path-changed",
+        severity: "weakening",
+        file: "jevy.config.ts",
+        line: 5,
+        message: "protect changed",
+        before: '["tests/critical/**", "docs/plan.md"]',
+        after: '["tests/critical/**"]',
+      },
+    ]);
+    // Growing the list, or swapping one element, is a change to it as well.
+    expect(jevy(shorter, listed)).toMatchObject([
+      { kind: "protected-path-changed", message: "protect changed" },
+    ]);
+    expect(
+      jevy(listed, listed.replace("tests/critical/**", "tests/crit/**")),
+    ).toMatchObject([
+      { kind: "protected-path-changed", message: "protect changed" },
+    ]);
+    expect(jevy(listed, listed.replace('"docs/plan.md"]', "...more]"))).toEqual(
+      [
+        {
+          kind: "protected-path-changed",
+          severity: "weakening",
+          file: "jevy.config.ts",
+          line: 5,
+          message: "protect changed",
+          before: '["tests/critical/**", "docs/plan.md"]',
+          after: '["tests/critical/**", ...more]',
+        },
+      ],
+    );
+  });
+
+  it("reports protect added or removed", () => {
+    const listed = JEVY.replace(
+      "  thresholds:",
+      '  protect: ["tests/critical/**"],\n  thresholds:',
+    );
+    expect(jevy(JEVY, listed)).toEqual([
+      {
+        kind: "protected-path-changed",
+        severity: "weakening",
+        file: "jevy.config.ts",
+        line: 5,
+        message: "protect added",
+        after: '["tests/critical/**"]',
+      },
+    ]);
+    expect(jevy(listed, JEVY)).toEqual([
+      {
+        kind: "protected-path-changed",
+        severity: "weakening",
+        file: "jevy.config.ts",
+        line: 5,
+        message: "protect removed",
+        before: '["tests/critical/**"]',
+      },
+    ]);
+  });
+
+  it("reports protect once however it is written, and not for reformatting", () => {
+    const listed = JEVY.replace(
+      "  thresholds:",
+      '  protect: ["a/**", "b/**"],\n  thresholds:',
+    );
+    const reformatted = listed.replace(
+      '["a/**", "b/**"]',
+      "[\n    'a/**',\n    'b/**',\n  ]",
+    );
+    expect(jevy(listed, reformatted)).toEqual([]);
+    // An object is not a valid list, but a change to it is still one finding.
+    const object = listed.replace('["a/**", "b/**"]', "{ a: 1, b: 2 }");
+    expect(kinds(jevy(listed, object))).toEqual(["protected-path-changed"]);
+    expect(
+      jevy(object, object.replace("{ a: 1, b: 2 }", "{ a: 2, b: 3 }")),
+    ).toMatchObject([
+      { kind: "protected-path-changed", message: "protect changed" },
+    ]);
+    // A key that merely starts with the same letters is not the protect key.
+    const other = JEVY.replace(
+      "  thresholds:",
+      "  protected: true,\n  thresholds:",
+    );
+    expect(jevy(JEVY, other)).toMatchObject([
+      { kind: "config-changed", message: "protected added" },
     ]);
   });
 
@@ -200,6 +298,60 @@ export default defineConfig({
     ]);
   });
 
+  it.each([
+    "__proto__",
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+    "valueOf",
+    "__defineGetter__",
+  ])(
+    "gives a known kind and a severity to a change under the key %s",
+    (key) => {
+      const config = (checks: string): string =>
+        `export default defineConfig({ ${key}: { checks: ${checks} }, "ci.needsReview.pr": 1 });\n`;
+      const findings = jevy(config('["pnpm test"]'), config("[]"));
+      expect(findings).toEqual([
+        {
+          kind: "config-changed",
+          severity: "review",
+          file: "jevy.config.ts",
+          line: 1,
+          message: `${key}.checks changed`,
+          before: '["pnpm test"]',
+          after: "[]",
+        },
+      ]);
+      for (const finding of findings) {
+        expect(Object.hasOwn(SEVERITY, finding.kind)).toBe(true);
+        expect(finding.severity).toBe(SEVERITY[finding.kind]);
+      }
+      const report = buildReport("main", "working-tree", findings);
+      expect(report.summary).toEqual({ weakening: 0, review: 1, info: 0 });
+      expect(() => formatHuman(report)).not.toThrow();
+    },
+  );
+
+  it("reports a config too deeply nested to analyse, instead of throwing", () => {
+    const deep = `export default defineConfig({ thresholds: { pass: ${"(".repeat(20000)}0.8${")".repeat(20000)} } });\n`;
+    for (const [before, after] of [
+      [JEVY, deep],
+      [deep, JEVY],
+      [deep, deep.replace("0.8", "0.5")],
+    ] as const) {
+      expect(jevy(before, after)).toEqual([
+        {
+          kind: "config-changed",
+          severity: "review",
+          file: "jevy.config.ts",
+          message: expect.stringMatching(
+            /^the change could not be analysed \(.+\); review it by hand$/,
+          ) as string,
+        },
+      ]);
+    }
+  });
+
   it("reports an added or removed config for review", () => {
     expect(kinds(jevy(null, JEVY))).toEqual(["config-changed"]);
     expect(jevy(JEVY, null)).toMatchObject([
@@ -268,5 +420,25 @@ export default defineConfig({
 
   it("reports a config that does not parse for review", () => {
     expect(kinds(pw(PW, "export default {"))).toEqual(["config-changed"]);
+  });
+
+  it("reports a config too deeply nested to analyse, instead of throwing", () => {
+    const deep = `export default defineConfig({ retries: ${"(".repeat(20000)}2${")".repeat(20000)} });\n`;
+    for (const [before, after] of [
+      [PW, deep],
+      [deep, PW],
+      [null, deep],
+    ] as const) {
+      expect(pw(before, after)).toEqual([
+        {
+          kind: "config-changed",
+          severity: "review",
+          file: "playwright.config.ts",
+          message: expect.stringMatching(
+            /^the change could not be analysed \(.+\); review it by hand$/,
+          ) as string,
+        },
+      ]);
+    }
   });
 });

@@ -1,4 +1,4 @@
-// The executable is src/bin.ts. record, eval and cache arrive in later milestones.
+// The executable is src/bin.ts. The app map, admission, cache and eval arrive in later steps.
 export { run, type CliResult, type RunOptions } from "./cli.js";
 export {
   GUARD_USAGE,
@@ -37,3 +37,19 @@ export type {
   GuardSummary,
   Severity,
 } from "./guard/types.js";
+export {
+  CONFIG_FILENAMES,
+  findConfig,
+  readConfigSettings,
+  type ConfigSettings,
+} from "./guard/config-source.js";
+export { checkGlob, firstMatch, matchesGlob } from "./guard/glob.js";
+export {
+  buildProtectRules,
+  protectedPathFindings,
+  protectionOf,
+  type Protection,
+  type ProtectRules,
+} from "./guard/protect.js";
+export { HOOK_USAGE, runHook, type HookDeps } from "./hook/command.js";
+export { claudeSettings, type ClaudeSettings } from "./hook/print.js";
