@@ -1,7 +1,8 @@
 import type { CacheMode } from "../config.js";
 import type { Answer, Decider, DecisionState, Question } from "../decider.js";
-import { validateQuestion } from "../decider.js";
-import { CacheError } from "../errors.js";
+import { validateAnswer, validateQuestion } from "../decider.js";
+import { CacheError, JevyError } from "../errors.js";
+import { isRecord } from "../guards.js";
 import { hashSnapshot } from "../hash.js";
 import { callDecider } from "../prepare.js";
 import type { PruneOptions } from "../prune.js";
@@ -12,10 +13,10 @@ import type { RedactRule } from "../redact.js";
 import type { SnapshotRegion } from "../snapshot.js";
 import { assertThresholds, gateAnswer } from "../verdict.js";
 import type { Thresholds, Verdict } from "../verdict.js";
-import { decisionKey, questionText } from "./key.js";
+import { assertSpecKeyable, decisionKey, questionText } from "./key.js";
 import { findLast } from "./last.js";
 import type { DecisionRecord } from "./record.js";
-import { serialiseRecord } from "./record.js";
+import { DECISION_RECORD_VERSION, serialiseRecord } from "./record.js";
 import type { DecisionStore } from "./store.js";
 
 const MODES: readonly CacheMode[] = ["replay", "replay-or-query", "record"];
@@ -53,7 +54,16 @@ export interface DecisionOutcome {
     readonly abstained: boolean;
   };
   readonly reason?: MissReason;
-  /** The stored record that was used, or the held record a call produced. */
+  /**
+   * The stored record that was used, or the record for an answer drawn in
+   * this run: from a call, or remembered by the run memo.
+   *
+   * A record is per key, not per step. When a session asks one key at several
+   * steps, every one of them gets the same record, and its `step` names the
+   * first step that asked; the step is informational and not part of the key.
+   * Likewise, when the store's last record for the key already says the same
+   * thing, that record is returned and nothing new is held.
+   */
   readonly record?: DecisionRecord;
 }
 
@@ -71,21 +81,32 @@ export interface RunMemoEntry {
 }
 
 /**
- * Answers already drawn in this process, by decision key. A retry of a test
+ * Answers already drawn in this run, by decision key. A retry of a test
  * inside one run reuses the answer instead of asking again, so it cannot draw
- * a different one. Share one memo across the sessions of a run.
+ * a different one, and holds a record of it. Share one memo across the
+ * sessions of a run.
+ *
+ * A memo may be shared between processes. Then the first answer set for a
+ * key must win: a later `set` leaves it in place, and `get` returns it. The
+ * session reads the key back after every `set` and uses what it gets.
+ *
+ * `get` may return undefined (or null) for a key it was given, for example
+ * when a shared memo could not keep the entry; that is a miss. Anything else
+ * that is not a well-formed entry for the question is a `CacheError`, because
+ * a shared memo returns what another process wrote.
  */
 export interface RunMemo {
   get(key: string): RunMemoEntry | undefined;
   set(key: string, entry: RunMemoEntry): void;
 }
 
+/** An in-memory memo for one process. The first entry set for a key stays. */
 export function createRunMemo(): RunMemo {
   const entries = new Map<string, RunMemoEntry>();
   return {
     get: (key) => entries.get(key),
     set: (key, entry) => {
-      entries.set(key, entry);
+      if (!entries.has(key)) entries.set(key, entry);
     },
   };
 }
@@ -127,24 +148,62 @@ export function createDecisionSession(
 ): DecisionSession {
   const settings = checkOptions(options);
   const memo = options.memo ?? createRunMemo();
-  let pending: DecisionRecord[] = [];
+  const state: SessionState = { pending: [], written: new Map() };
+  // Calls on one key run one after another, so a second call sees the record
+  // the first one held instead of asking the decider again.
+  const queues = new Map<string, Promise<unknown>>();
 
   return {
     decide: async (input) => {
-      const outcome = await decide(settings, memo, pending, input);
-      if (outcome.held !== undefined) pending.push(outcome.held);
-      return outcome.result;
+      const asked = prepare(settings, input);
+      const previous = queues.get(asked.key) ?? Promise.resolve();
+      const run = previous.then(async () => {
+        const outcome = await decide(settings, memo, state, input, asked);
+        if (outcome.held !== undefined) state.pending.push(outcome.held);
+        return outcome.result;
+      });
+      const settled = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      queues.set(asked.key, settled);
+      void settled.then(() => {
+        if (queues.get(asked.key) === settled) queues.delete(asked.key);
+      });
+      return run;
     },
     confirm: async () => {
-      if (pending.length === 0) return;
-      const batch = [...pending];
+      if (state.pending.length === 0) return;
+      const batch = [...state.pending];
       await settings.store.append(batch);
-      pending = pending.filter((record) => !batch.includes(record));
+      for (const record of batch) state.written.set(record.key, record);
+      state.pending = state.pending.filter((record) => !batch.includes(record));
     },
     discard: () => {
-      pending = [];
+      state.pending = [];
     },
   };
+}
+
+/**
+ * What a session remembers between calls. `pending` is held and not yet
+ * written; `written` is what `confirm` appended, by key. Together they are
+ * this session's answer for a key, which it reuses rather than ask again: a
+ * session never holds two records for one key.
+ */
+interface SessionState {
+  pending: DecisionRecord[];
+  readonly written: Map<string, DecisionRecord>;
+}
+
+/** What one call asks, worked out before the store, the memo or a decider. */
+interface Asked {
+  readonly spec: string;
+  readonly step: string;
+  readonly text: string;
+  readonly region: SnapshotRegion | undefined;
+  readonly snapshotHash: string;
+  readonly key: string;
 }
 
 interface Settings {
@@ -209,19 +268,14 @@ function checkOptions(options: DecisionSessionOptions): Settings {
   };
 }
 
-async function decide(
-  settings: Settings,
-  memo: RunMemo,
-  pending: readonly DecisionRecord[],
-  input: DecideInput,
-): Promise<{
-  readonly result: DecisionOutcome;
-  readonly held?: DecisionRecord;
-}> {
+/**
+ * Everything that will be written is redacted, and the spec checked, before
+ * the store, the memo or a decider is touched, so a refusal or a redaction
+ * failure costs no call and leaves nothing behind.
+ */
+function prepare(settings: Settings, input: DecideInput): Asked {
   validateQuestion(input.question);
-  // Everything that will be written is redacted before any decider call, so
-  // a redaction failure costs no call and leaves nothing behind.
-  const spec = redactText(input.spec, settings.redact);
+  assertSpecKeyable(input.spec, settings.redact);
   const step = redactText(input.step, settings.redact);
   const text = questionText(input.question, settings.redact);
   const region = input.region ?? settings.snapshot.region;
@@ -230,17 +284,36 @@ async function decide(
     hashOptions(settings, region),
   );
   const key = decisionKey({
+    spec: input.spec,
     question: input.question,
     snapshotHash,
     deciderId: settings.deciderId,
     model: settings.model,
     redact: settings.redact,
   });
+  return { spec: input.spec, step, text, region, snapshotHash, key };
+}
+
+async function decide(
+  settings: Settings,
+  memo: RunMemo,
+  state: SessionState,
+  input: DecideInput,
+  asked: Asked,
+): Promise<{
+  readonly result: DecisionOutcome;
+  readonly held?: DecisionRecord;
+}> {
+  const { spec, step, text, region, snapshotHash, key } = asked;
   const base = { key, snapshotHash };
 
   const stored = await settings.store.latest(key);
   if (stored !== undefined && settings.mode !== "record") {
-    assertMatches(stored, input.question.kind, text, snapshotHash, settings);
+    assertMatches(
+      stored,
+      { spec, kind: input.question.kind, text, snapshotHash },
+      settings,
+    );
     return { result: replayHit(settings, input.question, stored, base) };
   }
 
@@ -262,16 +335,37 @@ async function decide(
     };
   }
 
-  const remembered = memo.get(key);
+  const fields = {
+    key,
+    spec,
+    step,
+    kind: input.question.kind,
+    question: text,
+    snapshotHash,
+  };
+
+  // This session's own answer for the key comes first: a record it holds or
+  // wrote. The memo may not have kept it, and asking again could draw a
+  // different answer and hold a second record for the key.
+  const own =
+    state.pending.find((record) => record.key === key) ??
+    state.written.get(key);
+  if (own !== undefined) {
+    const outcome = fromAnswer(settings, input.question, entryOf(own), base);
+    return { result: { ...outcome, ...withReason, record: own } };
+  }
+
+  const remembered = readMemo(memo, key, input.question);
   if (remembered !== undefined) {
-    const record = pending.find((held) => held.key === key);
-    return {
-      result: {
-        ...fromAnswer(settings, input.question, remembered, base),
-        ...withReason,
-        ...(record !== undefined ? { record } : {}),
-      },
-    };
+    // A retry that passes on the first attempt's answer must leave a record,
+    // or the next run asks again and may draw a different answer.
+    const answered = answer(
+      settings,
+      input.question,
+      fields,
+      fromMemo(settings, remembered),
+    );
+    return hold(answered, withReason, stored);
   }
 
   const decider = settings.decider;
@@ -284,28 +378,149 @@ async function decide(
     { answer: input.question },
     { ...settings.snapshot, ...(region !== undefined ? { region } : {}) },
   );
-  const answer = answers["answer"];
-  if (answer === undefined) {
+  const drawn = answers["answer"];
+  if (drawn === undefined) {
     throw new CacheError("The decider returned no answer");
   }
   const entry: RunMemoEntry = {
-    answer: storableAnswer(settings, answer),
+    answer: storableAnswer(settings, drawn),
     truncated,
   };
-  const outcome = fromAnswer(settings, input.question, entry, base);
+  // The first answer for a key wins across processes. A memo shared between
+  // workers may already hold another worker's answer, which then stands for
+  // this attempt too, so two workers cannot record different answers.
+  memo.set(key, entry);
+  const kept = readMemo(memo, key, input.question);
+  const winner = kept === undefined ? entry : fromMemo(settings, kept);
+  const answered = answer(settings, input.question, fields, winner);
+  return hold(answered, withReason, stored);
+}
+
+/**
+ * Hold the record for an answer, unless the store's last record for the key
+ * already says the same thing (record mode, or a later test that shares the
+ * memo): then that record stands, and a second identical line is not written.
+ */
+function hold(
+  answered: {
+    readonly outcome: DecisionOutcome;
+    readonly record: DecisionRecord;
+  },
+  withReason: { readonly reason?: MissReason },
+  stored: DecisionRecord | undefined,
+): { readonly result: DecisionOutcome; readonly held?: DecisionRecord } {
+  if (stored !== undefined && sameDecision(stored, answered.record)) {
+    return { result: { ...answered.outcome, ...withReason, record: stored } };
+  }
+  return {
+    result: { ...answered.outcome, ...withReason, record: answered.record },
+    held: answered.record,
+  };
+}
+
+/**
+ * True when two records for one key carry the same decision. `createdAt` and
+ * `step` are left out: a record is per key, and when it was written and at
+ * which step it was first asked do not change what a replay returns.
+ */
+function sameDecision(a: DecisionRecord, b: DecisionRecord): boolean {
+  return (
+    a.key === b.key &&
+    a.spec === b.spec &&
+    a.kind === b.kind &&
+    a.question === b.question &&
+    a.snapshotHash === b.snapshotHash &&
+    a.decider === b.decider &&
+    a.model === b.model &&
+    a.answer === b.answer &&
+    a.confidence === b.confidence &&
+    a.abstained === b.abstained &&
+    a.truncated === b.truncated &&
+    a.verdict === b.verdict &&
+    a.thresholds.pass === b.thresholds.pass &&
+    a.thresholds.fail === b.thresholds.fail &&
+    a.rules === b.rules &&
+    a.reviewedBy === b.reviewedBy &&
+    a.reviewVerdict === b.reviewVerdict
+  );
+}
+
+/** The answer a record holds, as a memo entry. */
+function entryOf(record: DecisionRecord): RunMemoEntry {
+  return {
+    answer: {
+      value: record.answer,
+      confidence: record.confidence,
+      abstained: record.abstained,
+    },
+    truncated: record.truncated,
+  };
+}
+
+/**
+ * The memo's entry for `key`, checked. Undefined or null is a miss. Any
+ * other value must be `{ answer, truncated }` with an answer valid for the
+ * question, or it is a `CacheError`: a shared memo returns what another
+ * process wrote, and a malformed entry must not become a verdict or crash
+ * with a `TypeError`.
+ */
+function readMemo(
+  memo: RunMemo,
+  key: string,
+  question: Question,
+): RunMemoEntry | undefined {
+  const value: unknown = memo.get(key);
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value) || !isRecord(value["answer"])) {
+    throw new CacheError(
+      `The run memo entry for ${key} must be an object with an answer object`,
+    );
+  }
+  const truncated = value["truncated"];
+  if (typeof truncated !== "boolean") {
+    throw new CacheError(
+      `The run memo entry for ${key} must have a boolean truncated flag`,
+    );
+  }
+  const raw = value["answer"];
+  const answer: Answer = {
+    value: raw["value"] as string,
+    confidence: raw["confidence"] as number,
+    ...(raw["abstained"] !== undefined
+      ? { abstained: raw["abstained"] as boolean }
+      : {}),
+  };
+  try {
+    validateAnswer(question, answer);
+  } catch (error: unknown) {
+    if (error instanceof JevyError) {
+      throw new CacheError(
+        `The run memo entry for ${key} is not a valid answer: ${error.message}`,
+      );
+    }
+    throw error;
+  }
+  return { answer, truncated };
+}
+
+/** The outcome of an answer drawn in this run, and the record to hold for it. */
+function answer(
+  settings: Settings,
+  question: Question,
+  fields: Omit<RecordFields, "answer" | "truncated" | "verdict">,
+  entry: RunMemoEntry,
+): { readonly outcome: DecisionOutcome; readonly record: DecisionRecord } {
+  const outcome = fromAnswer(settings, question, entry, {
+    key: fields.key,
+    snapshotHash: fields.snapshotHash,
+  });
   const record = buildRecord(settings, {
-    key,
-    spec,
-    step,
-    kind: input.question.kind,
-    question: text,
-    snapshotHash,
+    ...fields,
     answer: entry.answer,
-    truncated,
+    truncated: entry.truncated,
     verdict: outcome.verdict,
   });
-  memo.set(key, entry);
-  return { result: { ...outcome, ...withReason, record }, held: record };
+  return { outcome, record };
 }
 
 function replayHit(
@@ -424,6 +639,18 @@ function storableAnswer(settings: Settings, answer: Answer): Answer {
   };
 }
 
+/**
+ * An entry read back from the memo. A shared memo returns what another
+ * process wrote, so it is redacted again before it reaches an outcome or a
+ * record; for an entry this process wrote, that changes nothing.
+ */
+function fromMemo(settings: Settings, entry: RunMemoEntry): RunMemoEntry {
+  return {
+    answer: storableAnswer(settings, entry.answer),
+    truncated: entry.truncated,
+  };
+}
+
 /** The spec, step, question and answer were redacted by the caller. */
 function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
   const createdAt = settings.now();
@@ -431,7 +658,7 @@ function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
     throw new CacheError("The session clock returned an invalid date");
   }
   const record: DecisionRecord = {
-    v: 1,
+    v: DECISION_RECORD_VERSION,
     key: fields.key,
     spec: fields.spec,
     step: fields.step,
@@ -463,20 +690,24 @@ function buildRecord(settings: Settings, fields: RecordFields): DecisionRecord {
  */
 function assertMatches(
   stored: DecisionRecord,
-  kind: Question["kind"],
-  text: string,
-  snapshotHash: string,
+  asked: {
+    readonly spec: string;
+    readonly kind: Question["kind"];
+    readonly text: string;
+    readonly snapshotHash: string;
+  },
   settings: Settings,
 ): void {
   if (
-    stored.kind !== kind ||
-    stored.question !== text ||
-    stored.snapshotHash !== snapshotHash ||
+    stored.spec !== asked.spec ||
+    stored.kind !== asked.kind ||
+    stored.question !== asked.text ||
+    stored.snapshotHash !== asked.snapshotHash ||
     stored.decider !== settings.deciderId ||
     stored.model !== settings.model
   ) {
     throw new CacheError(
-      `Stored decision ${stored.key} in ${stored.spec} does not match the question, snapshot, decider or model its key stands for`,
+      `Stored decision ${stored.key} in ${stored.spec} does not match the spec, question, snapshot, decider or model its key stands for`,
     );
   }
 }

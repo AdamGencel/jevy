@@ -1,0 +1,15 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "types": ["node"],
+    "verbatimModuleSyntax": false,
+    "paths": {
+      "@jevyjs/core": ["../../../core/src/index.ts"],
+      "@jevyjs/deciders-llm": ["../../../deciders-llm/src/index.ts"],
+      "@jevyjs/playwright": ["../../src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

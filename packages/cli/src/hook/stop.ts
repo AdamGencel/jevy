@@ -25,7 +25,15 @@ import {
   startPath,
   statePath,
 } from "./state.js";
-import { clip, indent, messageOf, printable, tail } from "./text.js";
+import {
+  clip,
+  clipPath,
+  indent,
+  messageOf,
+  printable,
+  printableLines,
+  tail,
+} from "./text.js";
 
 /**
  * `jevy hook stop`: what a coding agent runs before it may say it is done.
@@ -279,10 +287,16 @@ interface Progress {
   /** What the hook is doing now, as the rest of "while it was ...". */
   doing: string;
   readonly failures: Failure[];
-  /** Check commands that have not finished: the one running, then the rest. */
+  /** True once the config has been read, so the checks are known. */
+  configRead: boolean;
+  /** Check commands that have not finished, in order. */
   unfinished: readonly string[];
+  /** True while the first of `unfinished` is running. */
+  running: boolean;
   /** True once every guard comparison has answered. */
   guardDone: boolean;
+  /** True once the config has been compared with the start of the session. */
+  configCompared: boolean;
   /**
    * The guard's weakening findings so far, by finding. They become one
    * failure when the last comparison has answered, or when time runs out.
@@ -317,9 +331,11 @@ function shortHash(commit: string): string {
 
 /**
  * Where this session started, from the record `jevy hook session-start`
- * left. A record that cannot be read, or that names a commit the repository
- * no longer has, is a failure: reading either as "no record" would let an
- * agent hide its commits by damaging the file or rewriting history.
+ * left under the repository's top level. A record that cannot be read, or
+ * that names a commit the repository no longer has, is a failure: reading
+ * either as "no record" would let an agent hide its commits by damaging the
+ * file or rewriting history. So is a repository whose top level git cannot
+ * name, since the record cannot be looked for.
  */
 async function sessionBaseline(
   projectDir: string,
@@ -329,9 +345,23 @@ async function sessionBaseline(
   if (sessionId === null) {
     return { kind: "none" };
   }
+  const top = await deps.git.topLevel(projectDir);
+  if (top === null) {
+    // Outside a repository there is nothing to compare; the guard says so.
+    return (await deps.git.head(projectDir)) === null
+      ? { kind: "none" }
+      : {
+          kind: "lost",
+          failure: plain(
+            "session-start:no-root",
+            "The hook cannot find the root of the repository, so it cannot find its record of where this session started. A person has to look at what changed.",
+            "the hook cannot find the root of the repository, so what the session committed was not checked",
+          ),
+        };
+  }
   const record = await loadStart(
     deps.state,
-    startPath(deps.state.dir, projectDir, sessionId),
+    startPath(deps.state.dir, top, sessionId),
   );
   if (record.kind === "none") {
     return record;
@@ -375,7 +405,11 @@ function outputBody(output: string): (room: number) => string {
     if (chars < MIN_OUTPUT) {
       return room < OUTPUT_LEFT_OUT.length ? "" : OUTPUT_LEFT_OUT;
     }
-    const shown = tail(output, { lines: OUTPUT_TAIL.lines, chars });
+    // Escaped before it is cut, so that the limit counts what is shown.
+    const shown = tail(printableLines(output), {
+      lines: OUTPUT_TAIL.lines,
+      chars,
+    });
     return indent(shown === "" ? "(no output)" : shown);
   };
 }
@@ -438,12 +472,14 @@ async function checksStage(run: Run): Promise<void> {
       return;
     }
     progress.unfinished = commands.slice(index);
+    progress.running = true;
     progress.doing = `running the check ${printable(clip(command, MAX_COMMAND))}`;
     const failure = await runCheck(command, run);
     if (timeIsUp(run)) {
       // Killed by the deadline: it is reported as unfinished, not failed.
       return;
     }
+    progress.running = false;
     if (failure !== null) {
       progress.failures.push(failure);
     }
@@ -460,6 +496,7 @@ async function elsewhereStage(run: Run): Promise<void> {
   if (run.config !== null) {
     return;
   }
+  run.progress.doing = "looking for a config in another directory";
   const found = await configElsewhere(run.projectDir, run.deps);
   if (found === null) {
     return;
@@ -585,7 +622,7 @@ function findingLine(finding: GuardFinding): string {
   const test =
     finding.test === null ? "" : `, in "${clip(finding.test, MAX_TITLE)}"`;
   return printable(
-    `${clip(finding.file, MAX_FILE)}: ${clip(finding.kind, MAX_KIND)}${where}${test}: ${clip(finding.message, MAX_MESSAGE)}`,
+    `${clipPath(finding.file, MAX_FILE)}: ${clip(finding.kind, MAX_KIND)}${where}${test}: ${clip(finding.message, MAX_MESSAGE)}`,
   );
 }
 
@@ -593,7 +630,7 @@ function findingBrief(finding: GuardFinding): string {
   const test =
     finding.test === null ? "" : ` ("${clip(finding.test, BRIEF_TITLE)}")`;
   return printable(
-    `jevy guard: ${clip(finding.kind, MAX_KIND)} in ${clip(finding.file, BRIEF_FILE)}${test}`,
+    `jevy guard: ${clip(finding.kind, MAX_KIND)} in ${clipPath(finding.file, BRIEF_FILE)}${test}`,
   );
 }
 
@@ -767,7 +804,10 @@ async function guardStage(run: Run): Promise<void> {
       return;
     }
     progress.doing = `running jevy guard against ${printable(comparison.since)}`;
-    const outcome = readGuard(await deps.guard(comparison.argv), comparison);
+    const outcome = readGuard(
+      await deps.guard(comparison.argv, run.signal),
+      comparison,
+    );
     if ("failure" in outcome) {
       progress.failures.push(outcome.failure);
       continue;
@@ -833,6 +873,7 @@ async function configStage(run: Run): Promise<void> {
   if (commit === null) {
     // No commit to compare with: not a repository, or nothing committed
     // yet. The guard has already said so.
+    progress.configCompared = true;
     return;
   }
   const changed: string[] = [];
@@ -844,6 +885,7 @@ async function configStage(run: Run): Promise<void> {
       changed.push(`${name} (${change})`);
     }
   }
+  progress.configCompared = true;
   if (changed.length === 0) {
     return;
   }
@@ -879,6 +921,10 @@ async function findFailures(
   let baseline: Baseline;
   try {
     config = await readConfig(projectDir, deps);
+    progress.configRead = true;
+    if (config !== null && !unreadable(config, "checks")) {
+      progress.unfinished = config.settings.checks ?? [];
+    }
     progress.doing = "reading the record of where the session started";
     baseline = await sessionBaseline(
       projectDir,
@@ -911,21 +957,39 @@ async function findFailures(
   }
 }
 
+/** One line for each check that did not finish. */
+function checkLines(progress: Progress): string[] {
+  if (!progress.configRead) {
+    return ["not started: the checks (the config was not read)"];
+  }
+  const names = progress.unfinished.map((command) =>
+    printable(clip(command, MAX_COMMAND)),
+  );
+  const [first, ...rest] = names;
+  return progress.running && first !== undefined
+    ? [
+        `killed while it was running: ${first}`,
+        ...rest.map((command) => `not started: ${command}`),
+      ]
+    : names.map((command) => `not started: ${command}`);
+}
+
 /**
  * The failure for a hook that ran out of time, naming what did not finish.
  * A check that was still running has not passed, and one that never started
- * has not either.
+ * has not either; nor has a guard comparison or the comparison of the
+ * config. Every stage is named, so the list is never empty: the deadline
+ * passes in one of them.
  */
 function deadlineFailure(progress: Progress, seconds: number): Failure {
-  const [running, ...waiting] = progress.unfinished.map((command) =>
-    printable(clip(command, MAX_COMMAND)),
-  );
   const lines = [
-    ...(running === undefined
-      ? []
-      : [`killed while it was running: ${running}`]),
-    ...waiting.map((command) => `not started: ${command}`),
+    ...checkLines(progress),
     ...(progress.guardDone ? [] : ["not finished: jevy guard"]),
+    ...(progress.configCompared
+      ? []
+      : [
+          "not finished: the comparison of the config with the start of the session",
+        ]),
   ];
   const limit = `${String(seconds)} s`;
   return {
@@ -1151,8 +1215,11 @@ export async function runStop(
       input: null,
       doing: "starting",
       failures: [],
+      configRead: false,
       unfinished: [],
+      running: false,
       guardDone: false,
+      configCompared: false,
       reported: new Map(),
     };
     const deadlineMs = options.deadlineSeconds * 1000;

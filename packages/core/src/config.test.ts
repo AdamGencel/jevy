@@ -7,6 +7,7 @@ import {
   DEFAULT_JEV_MODEL,
   DEFAULT_KEV_BASE_URL,
   DEFAULT_KEV_MODEL,
+  configExport,
   defineConfig,
   loadConfig,
   parseConfig,
@@ -223,6 +224,49 @@ describe("config", () => {
       ConfigError,
     );
   });
+
+  it("loads a config compiled to CommonJS, as Playwright does in a CommonJS project", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "package.json"), "{}\n");
+    await writeFile(
+      join(dir, "jevy.config.js"),
+      [
+        '"use strict";',
+        'Object.defineProperty(exports, "__esModule", { value: true });',
+        'exports.default = { decider: "kev" };',
+        "",
+      ].join("\n"),
+    );
+    const loaded = await loadConfig({ cwd: dir, env: {} });
+    expect(loaded.decider?.use).toBe("kev");
+  });
+
+  it("unwraps the default export of a module compiled to CommonJS, whatever Node does", () => {
+    // Node 22 and Playwright's own loader hand a compiled module over as
+    // { default: { __esModule: true, default: config } }; Node 24 unwraps it.
+    const config = { decider: "kev" };
+    expect(
+      configExport({ default: { __esModule: true, default: config } }),
+    ).toBe(config);
+    expect(configExport({ default: config })).toBe(config);
+    const plain = { default: config };
+    expect(configExport({ default: plain })).toBe(plain);
+    expect(
+      configExport({ default: { __esModule: false, default: config } }),
+    ).toEqual({ __esModule: false, default: config });
+  });
+
+  it("does not unwrap a plain CommonJS object that has a default key", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "package.json"), "{}\n");
+    await writeFile(
+      join(dir, "jevy.config.js"),
+      'module.exports = { default: { decider: "kev" } };\n',
+    );
+    await expect(loadConfig({ cwd: dir, env: {} })).rejects.toThrow(
+      "unknown keys: default",
+    );
+  });
 });
 
 function raw(value: unknown): unknown {
@@ -405,6 +449,8 @@ const GLOB_TABLE = {
     ".jevy/**",
     "app/(marketing)/**",
     "tests/my dir/*.ts",
+    "my docs/plan.md",
+    "{my docs,a b}/**",
     "a+b$^.ts",
     "{a,b}".repeat(8),
   ],
@@ -414,6 +460,13 @@ const GLOB_TABLE = {
     " tests/**",
     "tests/** ",
     "\ttests/**",
+    "{plans, tests/critical}/**",
+    "{plans,tests/critical }/**",
+    "tests/critical /**",
+    "tests/ critical/**",
+    "{a,b }/x",
+    "a{ b,c}",
+    "tests/\t/**",
     "!tests/**",
     "./!x",
     "{!a,b}",
@@ -546,6 +599,18 @@ describe("guard settings: protect, checks and guard.tests", () => {
     const bad: readonly [string, string][] = [
       [" tests/**", "protect[0] must not start or end with whitespace"],
       ["tests/** ", "protect[0] must not start or end with whitespace"],
+      [
+        "{plans, tests/critical}/**",
+        "protect[0] must not have whitespace at the start or end of a",
+      ],
+      [
+        "tests/critical /**",
+        "protect[0] must not have whitespace at the start or end of a path segment",
+      ],
+      [
+        "a{ b,c}",
+        "protect[0] must not have whitespace at the start or end of a brace alternative",
+      ],
       ["./!x", "protect[0] must not start with '!'"],
       ["{!a,b}", "protect[0] must not start with '!'"],
       ["{/etc,a}", "protect[0] must be relative"],
@@ -594,5 +659,37 @@ describe("guard settings: protect, checks and guard.tests", () => {
       { env: {} },
     );
     expect(config.checks).toHaveLength(1);
+  });
+});
+
+describe("toSatisfy.blocking", () => {
+  it("defaults to advisory, so a verdict does not fail a test", () => {
+    expect(parseConfig({}, { env: {} }).toSatisfy).toEqual({ blocking: false });
+    expect(parseConfig({ toSatisfy: {} }, { env: {} }).toSatisfy).toEqual({
+      blocking: false,
+    });
+  });
+
+  it("keeps the switch as written, also through defineConfig", () => {
+    const defined = defineConfig({ toSatisfy: { blocking: true } });
+    expect(parseConfig(defined, { env: {} }).toSatisfy).toEqual({
+      blocking: true,
+    });
+    expect(
+      parseConfig({ toSatisfy: { blocking: false } }, { env: {} }).toSatisfy,
+    ).toEqual({ blocking: false });
+  });
+
+  it.each<[unknown, string]>([
+    [true, "toSatisfy must be an object"],
+    [null, "toSatisfy must be an object"],
+    [[], "toSatisfy must be an object"],
+    [{ blocking: "true" }, "toSatisfy.blocking must be a boolean"],
+    [{ blocking: 1 }, "toSatisfy.blocking must be a boolean"],
+    [{ blocking: null }, "toSatisfy.blocking must be a boolean"],
+    [{ blocking: true, perTest: false }, "toSatisfy has unknown keys: perTest"],
+  ])("rejects toSatisfy %j", (toSatisfy, message) => {
+    expect(() => parseConfig({ toSatisfy }, { env: {} })).toThrow(ConfigError);
+    expect(() => parseConfig({ toSatisfy }, { env: {} })).toThrow(message);
   });
 });

@@ -2,10 +2,16 @@ import { constants } from "node:fs";
 import { lstat, open, readlink, realpath } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { tmpdir } from "node:os";
-import type { CliResult } from "../cli.js";
 import { runGuard } from "../guard/command.js";
 import { GuardError } from "../guard/errors.js";
-import { gitHead, gitOriginHead, gitReadAt, gitTrackedConfigs } from "./git.js";
+import {
+  gitHead,
+  gitOriginHead,
+  gitReadAt,
+  gitTopLevel,
+  gitTrackedConfigs,
+} from "./git.js";
+import { builtBin, guardInChild, type RunGuard } from "./guard-process.js";
 import { gitRefExists, runShell, type RunCommand } from "./shell.js";
 import { realStateFiles, type StateFiles } from "./state.js";
 
@@ -13,6 +19,11 @@ import { realStateFiles, type StateFiles } from "./state.js";
 export interface HookGit {
   /** Full hash of the commit `HEAD` points at; null when there is none. */
   readonly head: (cwd: string) => Promise<string | null>;
+  /**
+   * The repository's top level with symlinks resolved; null outside a
+   * repository. The record of a session's start is kept under it.
+   */
+  readonly topLevel: (cwd: string) => Promise<string | null>;
   /** The branch `refs/remotes/origin/HEAD` points at, or null. */
   readonly originHead: (cwd: string) => Promise<string | null>;
   /**
@@ -51,8 +62,12 @@ export interface HookDeps {
   readonly readlink: (path: string) => Promise<string | null>;
   /** Runs one check command through the shell. */
   readonly runCommand: RunCommand;
-  /** `jevy guard` with these arguments; the signature of `runGuard`. */
-  readonly guard: (argv: readonly string[]) => Promise<CliResult>;
+  /**
+   * `jevy guard` with these arguments, answered as `runGuard` answers. When
+   * `signal` aborts the run is stopped: the real one runs the guard in a
+   * child process and kills it.
+   */
+  readonly guard: RunGuard;
   /** Whether `ref` names a commit in the repository around `cwd`. */
   readonly refExists: (ref: string, cwd: string) => Promise<boolean>;
   readonly git: HookGit;
@@ -152,6 +167,16 @@ async function readLinkText(path: string): Promise<string | null> {
 }
 
 /**
+ * The guard in a child process when this package is built, so that a
+ * deadline can stop it and a crash in it is the guard's and not the hook's;
+ * in this process when it runs from source, under the unit tests.
+ */
+function defaultGuard(): RunGuard {
+  const bin = builtBin();
+  return bin === null ? (argv) => runGuard(argv) : guardInChild(bin);
+}
+
+/**
  * The real thing, except stdin: `readStdin` answers "" here, so code that
  * calls `run` as a library never waits on the process's stdin. The `jevy`
  * executable passes the real one.
@@ -164,10 +189,11 @@ export function defaultHookDeps(): HookDeps {
     realpath: (path) => realpath(path),
     readlink: readLinkText,
     runCommand: runShell,
-    guard: (argv) => runGuard(argv),
+    guard: defaultGuard(),
     refExists: gitRefExists,
     git: {
       head: gitHead,
+      topLevel: gitTopLevel,
       originHead: gitOriginHead,
       readAt: gitReadAt,
       trackedConfigs: gitTrackedConfigs,

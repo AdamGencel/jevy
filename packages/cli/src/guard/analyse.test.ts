@@ -271,6 +271,126 @@ describe("analyse", () => {
   });
 });
 
+describe("analyse: toSatisfy.blocking in the config the loader reads", () => {
+  const ON = "export default { toSatisfy: { blocking: true } };\n";
+  const OFF = "export default { toSatisfy: { blocking: false } };\n";
+  const EMPTY = "export default {};\n";
+
+  async function found(
+    before: Record<string, string>,
+    after: Record<string, string>,
+    renames: Record<string, string> = {},
+  ): Promise<(readonly [string, string])[]> {
+    const reader = memoryReader(before, after, renames);
+    const findings = await analyse(reader, { cacheDir: CACHE });
+    return findings.map((f) => [f.file, f.kind] as const);
+  }
+
+  it("reports a deleted config that made toSatisfy blocking", async () => {
+    const reader = memoryReader({ "jevy.config.ts": ON }, {});
+    expect(await analyse(reader, { cacheDir: CACHE })).toEqual([
+      {
+        kind: "blocking-switched-off",
+        severity: "weakening",
+        file: "jevy.config.ts",
+        message:
+          "toSatisfy.blocking switched off (jevy.config.ts removed; the default is false): toSatisfy now only reports and cannot fail a test",
+        before: "true",
+      },
+      {
+        kind: "config-changed",
+        severity: "review",
+        file: "jevy.config.ts",
+        message: "jevy config removed; the defaults now apply",
+      },
+    ]);
+    expect(await found({ "e2e/jevy.config.mts": ON }, {})).toEqual([
+      ["e2e/jevy.config.mts", "blocking-switched-off"],
+      ["e2e/jevy.config.mts", "config-changed"],
+    ]);
+  });
+
+  it("reports a new config the loader reads before the one that made it blocking", async () => {
+    const reader = memoryReader(
+      { "jevy.config.mts": ON },
+      { "jevy.config.mts": ON, "jevy.config.ts": EMPTY },
+    );
+    expect(await analyse(reader, { cacheDir: CACHE })).toEqual([
+      {
+        kind: "blocking-switched-off",
+        severity: "weakening",
+        file: "jevy.config.ts",
+        message:
+          "toSatisfy.blocking switched off (the loader now reads jevy.config.ts instead of jevy.config.mts, and it does not set it; the default is false): toSatisfy now only reports and cannot fail a test",
+        before: "true",
+      },
+      {
+        kind: "config-changed",
+        severity: "review",
+        file: "jevy.config.ts",
+        message: "jevy config added; review all of it",
+      },
+    ]);
+  });
+
+  it("reports a rename to a name that sets it to false, paired by git or not", async () => {
+    const before = { "jevy.config.ts": ON };
+    const after = { "jevy.config.mts": OFF };
+    expect(await found(before, after)).toEqual([
+      ["jevy.config.mts", "config-changed"],
+      ["jevy.config.mts", "blocking-switched-off"],
+      ["jevy.config.ts", "config-changed"],
+    ]);
+    expect(
+      await found(before, after, { "jevy.config.mts": "jevy.config.ts" }),
+    ).toEqual([["jevy.config.mts", "blocking-switched-off"]]);
+  });
+
+  it("reports one that the loader reads once a config before it is gone", async () => {
+    expect(
+      await found(
+        { "jevy.config.ts": ON, "jevy.config.mts": OFF },
+        { "jevy.config.mts": OFF },
+      ),
+    ).toEqual([
+      ["jevy.config.mts", "blocking-switched-off"],
+      ["jevy.config.ts", "config-changed"],
+    ]);
+  });
+
+  it("does not report a change to a config the loader does not read", async () => {
+    // The loader reads jevy.config.ts, which still says true.
+    expect(
+      await found(
+        { "jevy.config.ts": ON, "jevy.config.mts": ON },
+        { "jevy.config.ts": ON, "jevy.config.mts": OFF },
+      ),
+    ).toEqual([["jevy.config.mts", "config-changed"]]);
+    expect(
+      await found(
+        { "jevy.config.mts": ON },
+        { "jevy.config.mts": ON, "jevy.config.ts": ON },
+      ),
+    ).toEqual([["jevy.config.ts", "config-changed"]]);
+  });
+
+  it("leaves a value it cannot read for review: it may still be true", async () => {
+    const unread = "export default { toSatisfy: { blocking: isCi } };\n";
+    expect(
+      await found(
+        { "jevy.config.mts": ON },
+        { "jevy.config.mts": ON, "jevy.config.ts": unread },
+      ),
+    ).toEqual([["jevy.config.ts", "config-changed"]]);
+  });
+
+  it("reports a switch in the one file the loader reads once", async () => {
+    expect(
+      await found({ "jevy.config.ts": ON }, { "jevy.config.ts": OFF }),
+    ).toEqual([["jevy.config.ts", "blocking-switched-off"]]);
+  });
+});
+
 describe("analyseAll", () => {
   it("merges the findings of several readers, each one once, sorted", async () => {
     const base = { "a.spec.ts": REAL, "b.spec.ts": REAL, "c.spec.ts": REAL };

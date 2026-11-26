@@ -13,7 +13,7 @@ import {
   type ParsedTestFile,
 } from "./parse.js";
 import type { Finding } from "./types.js";
-import { weakTestFinding } from "./weak-tests.js";
+import { weakTestFinding, type VerdictOptions } from "./weak-tests.js";
 
 /**
  * Compares two versions of one test file. Tests are matched by title path,
@@ -29,6 +29,13 @@ export interface TestFileChange {
   readonly before: string | null;
   /** Head text, or null when the file was deleted. */
   readonly after: string | null;
+  /**
+   * Whether `toSatisfy` blocks: the base version of the config sets
+   * `toSatisfy.blocking: true` and the change keeps it. Absent is the
+   * default, `false`, under which a test that only `toSatisfy` can fail
+   * is `only-advisory-assertions`.
+   */
+  readonly toSatisfyBlocking?: boolean;
 }
 
 /** `expect(…).not.toHaveText("Paid")`: the parts a weakening changes. */
@@ -218,23 +225,38 @@ function diffMarkers(at: Where, before: Markers, after: Markers): Finding[] {
 }
 
 /** The weak-test finding for the head version of a test, if it has one. */
-function weakFindings(file: string, test: ParsedTest): Finding[] {
-  const found = weakTestFinding(file, test);
+function weakFindings(
+  file: string,
+  test: ParsedTest,
+  options: VerdictOptions,
+): Finding[] {
+  const found = weakTestFinding(file, test, options);
   return found === null ? [] : [found];
+}
+
+/**
+ * True when a skip or an expected-failure marker came off: the test runs, or
+ * counts, again, so what its body checks is judged as if it were new.
+ */
+function markersCameOff(before: Markers, after: Markers): boolean {
+  return after.skip < before.skip || after.fail < before.fail;
 }
 
 function diffMatched(
   file: string,
   before: ParsedTest,
   after: ParsedTest,
+  untouched: ReadonlySet<ParsedTest>,
+  options: VerdictOptions,
 ): Finding[] {
   const at = where(file, after);
   const out = diffMarkers(at, before.markers, after.markers);
   // The guard reports what a change did: a test nobody touched is left
   // alone however weak it is, and a touched one is judged as it now stands.
   // A formatter's edit (a semicolon, a trailing comma) is not a touch.
-  const weak =
-    before.fingerprint === after.fingerprint ? [] : weakFindings(file, after);
+  const judged =
+    !untouched.has(after) || markersCameOff(before.markers, after.markers);
+  const weak = judged ? weakFindings(file, after, options) : [];
   if (before.dynamic || after.dynamic) {
     if (before.body !== after.body || before.cases !== after.cases) {
       out.push(
@@ -282,7 +304,12 @@ function keyed(tests: readonly ParsedTest[]): Map<string, ParsedTest> {
   return out;
 }
 
-function addedFindings(file: string, test: ParsedTest): Finding[] {
+function addedFindings(
+  file: string,
+  test: ParsedTest,
+  untouched: ReadonlySet<ParsedTest>,
+  options: VerdictOptions,
+): Finding[] {
   const at = where(file, test);
   const skipped = test.markers.skip > 0 ? " (skipped)" : "";
   const out = [
@@ -306,8 +333,12 @@ function addedFindings(file: string, test: ParsedTest): Finding[] {
     );
   }
   // A new test that is skipped is reported as such above; what its body
-  // checks is judged when the skip comes off, as for `it.todo`.
-  return test.markers.skip > 0 ? out : [...out, ...weakFindings(file, test)];
+  // checks is judged when the skip comes off (see `diffMatched`). One whose
+  // body a base test already had, under its title or under the title it was
+  // renamed from, is not new work, so it is not judged either.
+  return test.markers.skip > 0 || untouched.has(test)
+    ? out
+    : [...out, ...weakFindings(file, test, options)];
 }
 
 function removedFinding(file: string, test: ParsedTest): Finding {
@@ -330,36 +361,120 @@ function removedFinding(file: string, test: ParsedTest): Finding {
   });
 }
 
+/** A multiset of fingerprints, with each base test counted once. */
+class Fingerprints {
+  private readonly counts = new Map<string, number>();
+
+  add(fingerprint: string | null): void {
+    if (fingerprint !== null) {
+      this.counts.set(fingerprint, (this.counts.get(fingerprint) ?? 0) + 1);
+    }
+  }
+
+  /** Take one copy of `fingerprint`, if one is left. */
+  take(fingerprint: string | null): boolean {
+    const count =
+      fingerprint === null ? 0 : (this.counts.get(fingerprint) ?? 0);
+    if (fingerprint === null || count === 0) {
+      return false;
+    }
+    this.counts.set(fingerprint, count - 1);
+    return true;
+  }
+}
+
+function titleKey(test: ParsedTest): string {
+  return test.titlePath.join("\u0000");
+}
+
+/**
+ * Head tests whose body a base test with the same title path already had.
+ * Tests with one title are paired in order first, so an untouched test stays
+ * untouched; then any head test may take a base body still unclaimed, so
+ * one put in front of it, or a swap of two, leaves both alone. Each base
+ * body excuses one head test: a copy of an old test is new.
+ */
+function untouchedByTitle(
+  before: readonly ParsedTest[],
+  after: readonly ParsedTest[],
+): Set<ParsedTest> {
+  const groups = new Map<string, { base: ParsedTest[]; head: ParsedTest[] }>();
+  const group = (key: string) => {
+    const found = groups.get(key) ?? { base: [], head: [] };
+    groups.set(key, found);
+    return found;
+  };
+  before.forEach((test) => group(titleKey(test)).base.push(test));
+  after.forEach((test) => group(titleKey(test)).head.push(test));
+  const out = new Set<ParsedTest>();
+  for (const { base, head } of groups.values()) {
+    const left = new Fingerprints();
+    const rest: ParsedTest[] = [];
+    head.forEach((test, index) => {
+      const pair = base[index];
+      if (
+        pair !== undefined &&
+        test.fingerprint !== null &&
+        pair.fingerprint === test.fingerprint
+      ) {
+        out.add(test);
+      } else {
+        left.add(pair?.fingerprint ?? null);
+        rest.push(test);
+      }
+    });
+    base.slice(head.length).forEach((test) => {
+      left.add(test.fingerprint);
+    });
+    rest
+      .filter((test) => left.take(test.fingerprint))
+      .forEach((test) => {
+        out.add(test);
+      });
+  }
+  return out;
+}
+
 function diffParsed(
   file: string,
   before: ParsedTestFile,
   after: ParsedTestFile,
+  options: VerdictOptions,
 ): Finding[] {
   const out: Finding[] = [];
   const beforeTests = keyed(before.tests);
   const afterTests = keyed(after.tests);
+  const untouched = untouchedByTitle(before.tests, after.tests);
   const removed: ParsedTest[] = [];
   for (const [key, test] of beforeTests) {
     const match = afterTests.get(key);
     if (match === undefined) {
       removed.push(test);
     } else {
-      out.push(...diffMatched(file, test, match));
+      out.push(...diffMatched(file, test, match, untouched, options));
     }
   }
   const added = [...afterTests].filter(([key]) => !beforeTests.has(key));
   const unclaimed = new Set(added.map(([, test]) => test));
 
+  // A removed test whose body is back under another title, with only a
+  // formatter's edit, is a rename for the weak-test rules too: its copy is
+  // not judged. Which findings name the rename still rests on `body`.
+  const renamedFrom = new Fingerprints();
   for (const test of removed) {
     const twin =
       test.body === null
         ? undefined
         : [...unclaimed].find((candidate) => candidate.body === test.body);
     if (twin === undefined) {
+      renamedFrom.add(test.fingerprint);
       out.push(removedFinding(file, test));
       continue;
     }
     unclaimed.delete(twin);
+    if (twin.fingerprint === test.fingerprint) {
+      untouched.add(twin);
+    }
     out.push(
       finding({
         file,
@@ -370,11 +485,14 @@ function diffParsed(
         before: titleText(test.titlePath),
         after: titleText(twin.titlePath),
       }),
-      ...diffMatched(file, test, twin),
+      ...diffMatched(file, test, twin, untouched, options),
     );
   }
   for (const test of unclaimed) {
-    out.push(...addedFindings(file, test));
+    if (!untouched.has(test) && renamedFrom.take(test.fingerprint)) {
+      untouched.add(test);
+    }
+    out.push(...addedFindings(file, test, untouched, options));
   }
   out.push(
     ...diffAssertions(
@@ -427,5 +545,9 @@ export function diffTestFile(change: TestFileChange): readonly Finding[] {
   }
   const empty: ParsedTestFile = { tests: [], looseAssertions: [] };
   const base = before?.ok === true ? before.value : empty;
-  return sortFindings(diffParsed(file, base, after.value));
+  const options =
+    change.toSatisfyBlocking === undefined
+      ? {}
+      : { toSatisfyBlocking: change.toSatisfyBlocking };
+  return sortFindings(diffParsed(file, base, after.value, options));
 }

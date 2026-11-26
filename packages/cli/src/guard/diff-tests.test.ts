@@ -101,7 +101,17 @@ describe("diffTestFile: weakening", () => {
       "",
     );
     const found = diff(BASE, after);
-    expect(found).toHaveLength(1);
+    // Changed on purpose, twice. Under `@jevyjs/playwright` the test is left
+    // with toSatisfy alone, which is advisory by default, so it is also
+    // reported for review. BASE imports `@playwright/test`, whose expect has
+    // no toSatisfy and throws on it, so there it is one finding, as it was.
+    expect(found.map((f) => f.kind)).toEqual(["assertion-removed"]);
+    const jevy = (text: string): string =>
+      text.replace('"@playwright/test"', '"@jevyjs/playwright"');
+    expect(diff(jevy(BASE), jevy(after)).map((f) => f.kind)).toEqual([
+      "assertion-removed",
+      "only-advisory-assertions",
+    ]);
     expect(found[0]).toMatchObject({
       kind: "assertion-removed",
       severity: "weakening",
@@ -236,6 +246,43 @@ describe("diffTestFile: review", () => {
         after: "The page shows something",
       },
     ]);
+  });
+
+  it("still reports a changed statement when toSatisfy is the only, advisory, check", () => {
+    const before = `import { test, expect } from "@jevyjs/playwright";
+
+test("confirms", async ({ page }) => {
+  await page.goto("/order");
+  await expect(page.getByRole("main")).toSatisfy("The order is confirmed");
+});
+`;
+    const after = before.replace(
+      "The order is confirmed",
+      "Something is shown",
+    );
+    const statement = {
+      kind: "statement-changed",
+      severity: "review",
+      file: "a.spec.ts",
+      test: ["confirms"],
+      line: 5,
+      message: "confirms: toSatisfy statement changed",
+      before: "The order is confirmed",
+      after: "Something is shown",
+    };
+    // The body changed, so the test is judged as it now stands.
+    expect(diff(before, after)).toEqual([
+      expect.objectContaining({ kind: "only-advisory-assertions" }) as unknown,
+      statement,
+    ]);
+    expect([
+      ...diffTestFile({
+        file: "a.spec.ts",
+        before,
+        after,
+        toSatisfyBlocking: true,
+      }),
+    ]).toEqual([statement]);
   });
 
   it("reports a changed matcher name", () => {
@@ -597,10 +644,6 @@ describe("diffTestFile: new and changed tests that check nothing", () => {
       `it("new", () => { expect(add(1, 1)).toBe(2); });`,
     ],
     [
-      "toSatisfy",
-      playwright(`await expect(page).toSatisfy("The cart is empty");`),
-    ],
-    [
       "expect.soft",
       playwright(`expect.soft(page.getByRole("status")).toBeVisible();`),
     ],
@@ -628,18 +671,10 @@ describe("diffTestFile: new and changed tests that check nothing", () => {
       `it("new", () => { const onPaid = vi.fn(); pay(order, onPaid); expect(onPaid).toHaveBeenCalled(); });`,
     ],
     [
-      "a parameterised test that asserts on constants",
-      `test.each([1, 2])("new %i", () => { expect(1).toBe(1); });`,
-    ],
-    [
-      "a test under a parameterised describe that asserts on constants",
-      `describe.each([1, 2])("group %i", () => {\n  it("new", () => { expect(1).toBe(1); });\n});`,
+      "a parameterised test that reads its row in a self-comparison",
+      `test.each([1, 2])("new %i", (n) => { expect(n).toBe(n); });`,
     ],
     ["it.todo", `it.todo("new");`],
-    [
-      "a test whose title is not a literal that asserts on constants",
-      "test(`new ${n}`, () => { expect(true).toBe(true); });",
-    ],
     // Was test-without-assertion. Changed on purpose: a new skipped test is
     // reported as added and skipped, and judged when the skip comes off.
     ["a skipped test with an empty body", `test.fixme("new", async () => {});`],
@@ -667,6 +702,52 @@ describe("diffTestFile: new and changed tests that check nothing", () => {
     ],
   ])("stays silent on a new test with %s", (_name, test) => {
     expect(added(test)).toEqual([]);
+  });
+
+  // Moved from the silent list above. Changed on purpose: with toSatisfy
+  // advisory, the default, a new test checked by toSatisfy alone is
+  // reported for review; with toSatisfy blocking it is silent as before.
+  it("reports a new test checked by toSatisfy alone only while toSatisfy is advisory", () => {
+    const test = playwright(
+      `await expect(page).toSatisfy("The cart is empty");`,
+    );
+    // Changed on purpose: only `@jevyjs/playwright`'s toSatisfy is advisory,
+    // and BASE imports `@playwright/test`, whose expect throws on it.
+    expect(added(test)).toEqual([]);
+    const jevy = BASE.replace('"@playwright/test"', '"@jevyjs/playwright"');
+    expect(flagged(jevy, `${jevy}\n${test}\n`)).toEqual([
+      "only-advisory-assertions",
+    ]);
+    const after = `${jevy}\n${test}\n`;
+    expect(
+      diffTestFile({
+        file: "a.spec.ts",
+        before: jevy,
+        after,
+        toSatisfyBlocking: true,
+      })
+        .filter((found) => found.severity !== "info")
+        .map((found) => found.kind),
+    ).toEqual([]);
+  });
+
+  // Changed on purpose: these three were silent. A table or a title the
+  // body never reads cannot make a constant assertion real.
+  it.each([
+    [
+      "a parameterised test that asserts on constants",
+      `test.each([1, 2])("new %i", () => { expect(1).toBe(1); });`,
+    ],
+    [
+      "a test under a parameterised describe that asserts on constants",
+      `describe.each([1, 2])("group %i", () => {\n  it("new", () => { expect(1).toBe(1); });\n});`,
+    ],
+    [
+      "a test whose title is not a literal that asserts on constants",
+      "test(`new ${n}`, () => { expect(true).toBe(true); });",
+    ],
+  ])("reports a new test with %s", (_name, test) => {
+    expect(added(test)).toEqual(["assertion-cannot-fail"]);
   });
 
   it("looks into a helper in the same file", () => {
@@ -812,9 +893,13 @@ describe("diffTestFile: new and changed tests that check nothing", () => {
       "test-added",
       "test-without-assertion",
     ]);
-    // With an assertion left, the title or the loop may make it real.
+    // Changed on purpose: this was dynamic-title alone. The body reads
+    // nothing from the title or the loop, so its assertion cannot fail.
     const weaker = "test(`case ${n}`, () => { expect(1).toBe(1); });";
-    expect(kinds(before, weaker)).toEqual(["dynamic-title"]);
+    expect(kinds(before, weaker)).toEqual([
+      "assertion-cannot-fail",
+      "dynamic-title",
+    ]);
   });
 
   it("flags a changed parameterised test only when its body is left empty", () => {
@@ -900,6 +985,64 @@ describe("diffTestFile: new and changed tests that check nothing", () => {
       [9, "test-without-assertion"],
       [10, "assertion-cannot-fail"],
       [10, "test-added"],
+    ]);
+  });
+});
+
+describe("diffTestFile: weak tests that a change brings back, or leaves alone", () => {
+  const HEAD = `import { test, expect, describe } from "vitest";\n`;
+
+  it.each([
+    [
+      "a skip",
+      `${HEAD}test.skip("t", () => { const x = 1; });\n`,
+      `${HEAD}test("t", () => { const x = 1; });\n`,
+      "test-without-assertion",
+    ],
+    [
+      "a skip on its describe",
+      `${HEAD}describe.skip("d", () => {\n  test("t", () => { const x = 1; });\n});\n`,
+      `${HEAD}describe("d", () => {\n  test("t", () => { const x = 1; });\n});\n`,
+      "test-without-assertion",
+    ],
+    [
+      "an expected-failure marker",
+      `${HEAD}test.fails("t", () => { expect(1).toBe(1); });\n`,
+      `${HEAD}test("t", () => { expect(1).toBe(1); });\n`,
+      "assertion-cannot-fail",
+    ],
+  ])(
+    "judges an untouched body when %s comes off",
+    (_name, before, after, weak) => {
+      expect(kinds(before, after)).toContain(weak);
+    },
+  );
+
+  it("leaves a weak test alone when it is renamed and reformatted", () => {
+    const before = `${HEAD}test("old", () => { const x = 1 })\n`;
+    const after = `${HEAD}test("new", () => { const x = 1; })\n`;
+    // Which findings name the rename does not change: only the weak one goes.
+    expect(kinds(before, after)).toEqual(["test-added", "test-removed"]);
+  });
+
+  it("leaves a weak test alone when a test with the same title is put in front of it", () => {
+    const before = `${HEAD}test("t", () => { const x = 1; });\n`;
+    const after = `${HEAD}test("t", () => { expect(Date.now()).toBeGreaterThan(0); });\ntest("t", () => { const x = 1; });\n`;
+    expect(flagged(before, after)).not.toContain("test-without-assertion");
+  });
+
+  it("leaves weak tests alone when two with the same title swap places", () => {
+    const before = `${HEAD}test("t", () => { const x = 1; });\ntest("t", () => { expect(Date.now()).toBeGreaterThan(0); });\n`;
+    const after = `${HEAD}test("t", () => { expect(Date.now()).toBeGreaterThan(0); });\ntest("t", () => { const x = 1; });\n`;
+    expect(flagged(before, after)).not.toContain("test-without-assertion");
+  });
+
+  it("still judges a copy of a weak test that is new", () => {
+    const before = `${HEAD}test("t", () => { const x = 1; });\n`;
+    const after = `${before}test("t", () => { const x = 1; });\n`;
+    expect(kinds(before, after)).toEqual([
+      "test-added",
+      "test-without-assertion",
     ]);
   });
 });

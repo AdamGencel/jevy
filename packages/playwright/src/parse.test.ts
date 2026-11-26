@@ -1,7 +1,7 @@
-import { SnapshotError } from "@jevyjs/core";
+import { SnapshotError, reduceUrl } from "@jevyjs/core";
 import type { AccessibilityNode } from "@jevyjs/core";
 import { describe, expect, it } from "vitest";
-import { parseAriaSnapshot } from "./parse.js";
+import { parseAriaSnapshot, parseRawAriaSnapshot } from "./parse.js";
 
 /** Join lines so the YAML in a test reads like Playwright's output. */
 function yaml(...lines: readonly string[]): string {
@@ -133,21 +133,93 @@ describe("parseAriaSnapshot: nodes", () => {
           role: "listitem",
           children: [
             { role: "text", name: "Two" },
-            { role: "link", name: "link" },
+            { role: "link", name: "link", url: "https://example.test/t" },
           ],
         },
       ],
     });
   });
 
-  it("drops /url and /placeholder, which core has no field for", () => {
+  it("drops /placeholder, which core has no field for", () => {
     expect(
       only(yaml('- textbox "Bad" [invalid]:', "  - /placeholder: type here")),
     ).toEqual({ role: "textbox", name: "Bad", invalid: "true" });
+  });
+
+  it("keeps /url as the link's url", () => {
     expect(only(yaml('- link "Home":', "  - /url: /"))).toEqual({
       role: "link",
       name: "Home",
+      url: "/",
     });
+  });
+
+  it("keeps a /url next to the link's other children", () => {
+    expect(
+      only(yaml("- link:", "  - /url: /cart", '  - img "Cart"', "  - text: 2")),
+    ).toEqual({
+      role: "link",
+      url: "/cart",
+      children: [
+        { role: "img", name: "Cart" },
+        { role: "text", name: "2" },
+      ],
+    });
+  });
+
+  it.each([
+    // As Playwright 1.63 prints them: the raw href, quoted when YAML needs it.
+    ["about?x=1&token=abc#frag", "about"],
+    ["https://user:pw@example.test/p/a?sid=42#top", "https://example.test/p/a"],
+    ["javascript:alert('hi there')", "javascript:"],
+    ["mailto:a@b.co?subject=x", "mailto:"],
+    ['"  /spaced  "', "/spaced"],
+    ['"/a: b - c"', "/a: b - c"],
+    ["/café x", "/café x"],
+  ])("reduces the url %s as core does", (printed, url) => {
+    expect(only(yaml('- link "L":', `  - /url: ${printed}`))).toEqual({
+      role: "link",
+      name: "L",
+      url,
+    });
+    expect(reduceUrl(url)).toBe(url);
+  });
+
+  it("keeps the url as printed when asked for the raw tree", () => {
+    // The bridge scrubs secrets from the raw href before it is reduced: a
+    // secret holding "#" or "?" would otherwise be cut in two by the
+    // reduction, and its start would survive the scrub.
+    expect(
+      parseRawAriaSnapshot(
+        yaml('- link "L":', "  - /url: /u/hunt#er2zz?x=1", '  - img "I"'),
+      ),
+    ).toEqual({
+      role: "link",
+      name: "L",
+      url: "/u/hunt#er2zz?x=1",
+      children: [{ role: "img", name: "I" }],
+    });
+    expect(
+      parseRawAriaSnapshot(yaml('- link "Empty":', '  - /url: ""')),
+    ).toEqual({ role: "link", name: "Empty" });
+  });
+
+  it("gives no url for an empty href", () => {
+    expect(only(yaml('- link "Empty":', '  - /url: ""'))).toEqual({
+      role: "link",
+      name: "Empty",
+    });
+    expect(only(yaml('- link "Empty":', "  - /url:"))).toEqual({
+      role: "link",
+      name: "Empty",
+    });
+  });
+
+  it("rejects a node with two urls", () => {
+    expectSnapshotError(
+      yaml('- link "Two":', "  - /url: /a", "  - /url: /b"),
+      3,
+    );
   });
 
   it("reads the value of a textbox that also has a placeholder", () => {

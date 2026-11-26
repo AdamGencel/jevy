@@ -1,5 +1,6 @@
 export {
   ConfigError,
+  DeciderError,
   JevyError,
   QuestionError,
   RedactionError,
@@ -56,13 +57,17 @@ export {
   canonicalSnapshotJson,
   normaliseSnapshot,
   normaliseText,
+  reduceUrl,
 } from "./normalise.js";
+export { quoteForPrompt, renderSnapshot } from "./render.js";
 
 export {
   REDACTED,
   SECRET_AUTOCOMPLETE_TOKENS,
+  isSecretFieldName,
   redactSnapshot,
   redactText,
+  redactUrl,
   redactWallet,
 } from "./redact.js";
 export type { RedactRule } from "./redact.js";

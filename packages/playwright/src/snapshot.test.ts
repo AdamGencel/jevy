@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo, Server } from "node:net";
 import {
   REDACTED,
   RedactionError,
@@ -8,9 +10,10 @@ import {
 } from "@jevyjs/core";
 import type { AccessibilityNode } from "@jevyjs/core";
 import { chromium } from "@playwright/test";
-import type { Browser, Locator, Page } from "@playwright/test";
+import type { Browser, BrowserContext, Locator, Page } from "@playwright/test";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { snapshotAccessibility } from "./snapshot.js";
+import type { FieldReading } from "./secrets.js";
+import { rememberPasswordFields, snapshotAccessibility } from "./snapshot.js";
 
 const FALLBACK_CHROMIUM = "/opt/pw-browsers/chromium";
 
@@ -284,11 +287,13 @@ describe("snapshotAccessibility: content", () => {
                   children: [
                     {
                       role: "listitem",
-                      children: [{ role: "link", name: "Home" }],
+                      children: [{ role: "link", name: "Home", url: "/" }],
                     },
                     {
                       role: "listitem",
-                      children: [{ role: "link", name: "About us" }],
+                      children: [
+                        { role: "link", name: "About us", url: "/about" },
+                      ],
                     },
                   ],
                 },
@@ -442,10 +447,16 @@ describe("snapshotAccessibility: secret fields that change", () => {
   ): { readonly locator: Locator; readonly calls: () => number } {
     let calls = 0;
     const fake = {
-      evaluate: (): Promise<readonly string[]> => {
+      evaluate: (): Promise<{
+        readonly fields: readonly FieldReading[];
+        readonly remembered: undefined;
+      }> => {
         const values = reads[Math.min(calls, reads.length - 1)] ?? [];
         calls += 1;
-        return Promise.resolve(values);
+        return Promise.resolve({
+          fields: values.map(passwordField),
+          remembered: undefined,
+        });
       },
       ariaSnapshot: (): Promise<string> => Promise.resolve(yaml),
     };
@@ -473,5 +484,417 @@ describe("snapshotAccessibility: secret fields that change", () => {
       name: "PIN",
       value: REDACTED,
     });
+  });
+});
+
+/** A password field with the given value, as the DOM read returns it. */
+function passwordField(value: string): FieldReading {
+  return {
+    tag: "input",
+    type: "password",
+    value,
+    autocomplete: "",
+    name: "",
+    id: "",
+    wasPassword: false,
+  };
+}
+
+describe("snapshotAccessibility: link urls", () => {
+  it("keeps each link's url, reduced, and blanks a secret in it", async () => {
+    await page.setContent(`
+      <label>PIN <input type="password" value="77331"></label>
+      <a href="/orders/42?session=abc#top">Order</a>
+      <a href="https://user:pw@shop.test/pay">Pay</a>
+      <a href="javascript:alert('hi')">Script</a>
+      <a href="/reset/77331">Reset</a>
+      <a href="">Here</a>`);
+    const tree = await snapshotAccessibility(page);
+    expect(tree).toEqual({
+      role: "document",
+      children: [
+        { role: "text", name: "PIN" },
+        { role: "textbox", name: "PIN", value: REDACTED },
+        { role: "link", name: "Order", url: "/orders/42" },
+        { role: "link", name: "Pay", url: "https://shop.test/pay" },
+        { role: "link", name: "Script", url: "javascript:" },
+        { role: "link", name: "Reset", url: `/reset/${REDACTED}` },
+        { role: "link", name: "Here" },
+      ],
+    });
+    expect(redactSnapshot(tree)).toEqual(tree);
+  });
+
+  it.each([
+    ["hunt#er2zz", "/u/hunt#er2zz"],
+    ["secr?etvalue", "/u/secr?etvalue"],
+  ])("blanks a secret holding # or ? whole: %s", async (secret, href) => {
+    await page.setContent(
+      `<label>Pass <input type="password" value="${secret}"></label>` +
+        `<a href="${href}">x</a>`,
+    );
+    const tree = await snapshotAccessibility(page);
+    expect(JSON.stringify(tree)).not.toContain(secret.slice(0, 4));
+    expect(tree.children).toContainEqual({
+      role: "link",
+      name: "x",
+      url: `/u/${REDACTED}`,
+    });
+  });
+
+  it("blanks a secret in lower-case percent-encoding or with + for spaces", async () => {
+    await page.setContent(`
+      <label>Pass <input type="password" value="pässwort99"></label>
+      <label>Phrase <input type="password" value="my pass phrase"></label>
+      <a href="/u/p%c3%a4sswort99">lower</a>
+      <a href="/u/p%C3%a4sswort99">mixed</a>
+      <a href="/s/my+pass+phrase">plus</a>`);
+    const tree = await snapshotAccessibility(page);
+    const links = (tree.children ?? []).filter((node) => node.role === "link");
+    expect(links).toEqual([
+      { role: "link", name: "lower", url: `/u/${REDACTED}` },
+      { role: "link", name: "mixed", url: `/u/${REDACTED}` },
+      { role: "link", name: "plus", url: `/s/${REDACTED}` },
+    ]);
+  });
+
+  it("does not blank text that matches a number field named like a secret", async () => {
+    await page.setContent(`
+      <label>Min length <input type="number" name="password_min_length" value="8"></label>
+      <a href="/v8/docs">Docs v8</a>`);
+    const tree = await snapshotAccessibility(page);
+    expect(JSON.stringify(tree)).not.toContain(REDACTED);
+    expect(tree.children).toContainEqual({
+      role: "link",
+      name: "Docs v8",
+      url: "/v8/docs",
+    });
+  });
+
+  it("changes the hash when a link points somewhere new", async () => {
+    await page.setContent('<a href="/pay/visa">Pay</a>');
+    const base = hashSnapshot(await snapshotAccessibility(page));
+    await page.setContent('<a href="/pay/visa?t=1">Pay</a>');
+    expect(hashSnapshot(await snapshotAccessibility(page))).toBe(base);
+    await page.setContent('<a href="/pay/crypto">Pay</a>');
+    expect(hashSnapshot(await snapshotAccessibility(page))).not.toBe(base);
+  });
+});
+
+/**
+ * A login form with a "show password" button, as sites build it: the button
+ * switches the field's `type` between `password` and `text`.
+ */
+function loginPage(name: string, id: string): string {
+  return `<!doctype html><title>Login</title>
+    <label>Your code <input type="password" name="${name}" id="${id}"></label>
+    <button id="show" onclick="
+      const f = document.getElementById('${id}');
+      f.type = f.type === 'password' ? 'text' : 'password';
+    ">Show</button>
+    <button id="rerender" onclick="
+      const old = document.getElementById('${id}');
+      const next = document.createElement('input');
+      next.type = 'text'; next.name = old.name; next.id = old.id;
+      next.value = old.value;
+      old.replaceWith(next);
+    ">Rerender</button>
+    <button id="move" onclick="
+      const f = document.getElementById('${id}');
+      f.remove(); document.body.append(f);
+    ">Move</button>
+    <shadow-login></shadow-login>
+    <script>
+      customElements.define("shadow-login", class extends HTMLElement {
+        constructor() {
+          super();
+          this.attachShadow({ mode: "open" }).innerHTML =
+            '<label>Inner <input type="password" id="inner"></label>';
+        }
+      });
+    </script>`;
+}
+
+describe("snapshotAccessibility: show-password fields", () => {
+  let server: Server;
+  let origin: string;
+  let html = "";
+
+  beforeAll(async () => {
+    server = createServer((_request, response) => {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(html);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      });
+    });
+  });
+
+  async function open(
+    page: string,
+    remember: boolean,
+  ): Promise<{ readonly context: BrowserContext; readonly tab: Page }> {
+    html = page;
+    const context = await browser.newContext();
+    if (remember) await context.addInitScript(rememberPasswordFields);
+    const tab = await context.newPage();
+    await tab.goto(origin);
+    return { context, tab };
+  }
+
+  async function textOf(tab: Page): Promise<string> {
+    return JSON.stringify(await snapshotAccessibility(tab));
+  }
+
+  it("finds that a switched field prints its value in clear", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), false);
+    await tab.fill("#code", "shown-secret-1");
+    await tab.click("#show");
+    expect(await tab.locator("#code").getAttribute("type")).toBe("text");
+    expect(await tab.locator("body").ariaSnapshot()).toContain(
+      "shown-secret-1",
+    );
+    await context.close();
+  });
+
+  it("blanks a switched field whose name says password, with no init script", async () => {
+    const { context, tab } = await open(loginPage("password", "code"), false);
+    await tab.fill("#code", "shown-secret-2");
+    await tab.click("#show");
+    expect(await textOf(tab)).not.toContain("shown-secret-2");
+    await context.close();
+  });
+
+  it("blanks a switched field whose id names a secret, with no init script", async () => {
+    const { context, tab } = await open(
+      loginPage("code", "user-passcode"),
+      false,
+    );
+    await tab.fill("#user-passcode", "shown-secret-3");
+    await tab.click("#show");
+    expect(await textOf(tab)).not.toContain("shown-secret-3");
+    await context.close();
+  });
+
+  it("misses a switched field with a neutral name and id, with no init script", async () => {
+    // The gap DESIGN.md §6 states: nothing on the page says it is secret.
+    const { context, tab } = await open(loginPage("code", "code"), false);
+    await tab.fill("#code", "shown-secret-4");
+    await tab.click("#show");
+    expect(await textOf(tab)).toContain("shown-secret-4");
+    await context.close();
+  });
+
+  it("blanks a switched field with a neutral name and id, with the init script", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), true);
+    await tab.fill("#code", "shown-secret-5");
+    await tab.click("#show");
+    const tree = await snapshotAccessibility(tab);
+    expect(JSON.stringify(tree)).not.toContain("shown-secret-5");
+    expect(tree.children).toContainEqual({
+      role: "textbox",
+      name: "Your code",
+      value: REDACTED,
+    });
+    await context.close();
+  });
+
+  it("keeps blanking it when the type is toggled back and forth", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), true);
+    await tab.fill("#code", "shown-secret-6");
+    for (let toggle = 0; toggle < 5; toggle += 1) {
+      await tab.click("#show");
+      expect(await textOf(tab)).not.toContain("shown-secret-6");
+    }
+    await context.close();
+  });
+
+  it("keeps blanking it when the field is moved or re-rendered", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), true);
+    await tab.fill("#code", "shown-secret-7");
+    await tab.click("#show");
+    await tab.click("#move");
+    expect(await textOf(tab)).not.toContain("shown-secret-7");
+    await tab.click("#rerender");
+    expect(await tab.locator("#code").getAttribute("type")).toBe("text");
+    expect(await textOf(tab)).not.toContain("shown-secret-7");
+    await context.close();
+  });
+
+  it("remembers a password field inside an open shadow root", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), true);
+    const inner = tab.locator("shadow-login #inner");
+    await inner.fill("shadow-shown-8");
+    await inner.evaluate((field) => {
+      (field as HTMLInputElement).type = "text";
+    });
+    expect(await textOf(tab)).not.toContain("shadow-shown-8");
+    await context.close();
+  });
+
+  it("remembers a password field in a shadow root attached after load", async () => {
+    const { context, tab } = await open("<!doctype html><p>Late</p>", true);
+    await tab.evaluate(async () => {
+      const host = document.createElement("late-login");
+      document.body.append(host);
+      // Let the observer see the host before it has a shadow root.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      customElements.define(
+        "late-login",
+        class extends HTMLElement {
+          constructor() {
+            super();
+            const root = this.attachShadow({ mode: "open" });
+            root.innerHTML = '<label>Late <input type="password"></label>';
+          }
+        },
+      );
+    });
+    const inner = tab.locator("late-login input");
+    await inner.fill("late-shown-11");
+    await inner.evaluate((field) => {
+      (field as HTMLInputElement).type = "text";
+    });
+    expect(await textOf(tab)).not.toContain("late-shown-11");
+    await context.close();
+  });
+
+  it("remembers a field switched in the same task it was added", async () => {
+    const { context, tab } = await open("<!doctype html><p>Empty</p>", true);
+    await tab.evaluate(() => {
+      const field = document.createElement("input");
+      field.type = "password";
+      field.value = "same-task-9";
+      field.setAttribute("aria-label", "Code");
+      document.body.append(field);
+      field.type = "text";
+    });
+    expect(await textOf(tab)).not.toContain("same-task-9");
+    await context.close();
+  });
+
+  it("is not blinded by a page that patches Symbol.for", async () => {
+    const { context, tab } = await open(
+      `<!doctype html><label>Pass <input id="a" type="password"></label>
+      <button>show</button>
+      <script>
+        const original = Symbol.for;
+        Symbol.for = (key) =>
+          key === "jevy.passwordFields" ? Symbol("x") : original(key);
+        document.querySelector("button").onclick = () => { a.type = "text"; };
+      </script>`,
+      true,
+    );
+    await tab.fill("#a", "tamper-for-12");
+    await tab.click("button");
+    expect(await textOf(tab)).not.toContain("tamper-for-12");
+    await context.close();
+  });
+
+  it("is not blinded by a page that patches getAttribute and re-renders", async () => {
+    const { context, tab } = await open(
+      `<!doctype html><label>Pass <input id="a" name="pw" type="password"></label>
+      <button>show</button>
+      <script>
+        const get = Element.prototype.getAttribute;
+        Element.prototype.getAttribute = function (name) {
+          return ["name", "id", "autocomplete"].includes(name)
+            ? null
+            : get.call(this, name);
+        };
+        document.querySelector("button").onclick = () => {
+          a.type = "text";
+          const copy = a.cloneNode();
+          copy.value = a.value;
+          a.replaceWith(copy);
+        };
+      </script>`,
+      true,
+    );
+    await tab.fill("#a", "tamper-attr-13");
+    await tab.click("button");
+    expect(await textOf(tab)).not.toContain("tamper-attr-13");
+    await context.close();
+  });
+
+  it("throws rather than trust a record that cannot be read", async () => {
+    // Without the init script a page can plant a record itself. It can only
+    // add fields to blank; a record that fails stops the snapshot.
+    const { context, tab } = await open(
+      `<!doctype html><script>
+        Object.defineProperty(location, "jevy.passwordFields", {
+          value: { read() { throw new Error("no"); } },
+        });
+      </script><p>Hi</p>`,
+      false,
+    );
+    await expect(snapshotAccessibility(tab)).rejects.toBeInstanceOf(
+      RedactionError,
+    );
+    await context.close();
+  });
+
+  it("still catches a re-rendered field after many other password fields come and go", async () => {
+    const { context, tab } = await open(loginPage("code", "code"), true);
+    await tab.fill("#code", "flood-shown-14");
+    await tab.evaluate(async () => {
+      const box = document.createElement("div");
+      document.body.append(box);
+      for (let round = 0; round < 20; round += 1) {
+        let html = "";
+        for (let index = 0; index < 100; index += 1) {
+          const tag = `${String(round)}-${String(index)}`;
+          html += `<input type="password" id="f-${tag}" name="n-${tag}">`;
+        }
+        box.innerHTML = html;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        box.innerHTML = "";
+      }
+    });
+    await tab.click("#show");
+    await tab.click("#rerender");
+    expect(await tab.locator("#code").getAttribute("type")).toBe("text");
+    expect(await textOf(tab)).not.toContain("flood-shown-14");
+    await context.close();
+  });
+
+  it("leaves the page's markup, its window globals and the field's type as they are without it", async () => {
+    const page = loginPage("code", "code");
+    const read = async (remember: boolean): Promise<unknown> => {
+      const { context, tab } = await open(page, remember);
+      await tab.fill("#code", "x");
+      await tab.click("#show");
+      const seen = await tab.evaluate(() => ({
+        html: document.documentElement.outerHTML,
+        keys: Object.getOwnPropertyNames(window).sort(),
+        type: (document.getElementById("code") as HTMLInputElement).type,
+      }));
+      await context.close();
+      return seen;
+    };
+    expect(await read(true)).toEqual(await read(false));
+  });
+
+  it("can be installed twice", async () => {
+    html = loginPage("code", "code");
+    const context = await browser.newContext();
+    await context.addInitScript(rememberPasswordFields);
+    await context.addInitScript(rememberPasswordFields);
+    const tab = await context.newPage();
+    await tab.goto(origin);
+    await tab.fill("#code", "twice-10");
+    await tab.click("#show");
+    expect(await textOf(tab)).not.toContain("twice-10");
+    await context.close();
   });
 });

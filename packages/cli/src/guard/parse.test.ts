@@ -261,6 +261,7 @@ const PLAIN = {
   hookChecks: false,
   customRunner: false,
   typeLevel: false,
+  readsRows: false,
   ownMocks: [],
 };
 
@@ -390,10 +391,12 @@ describe("parseTestFile: evidence for the weak-test rules", () => {
       ["page.waitForURL()", ".waitFor()"],
     ],
     [
-      "a variable declared with let",
+      // Changed on purpose: a let the file never assigns to cannot change,
+      // so it is now trusted as a const is. This one is given a new value.
+      "a variable declared with let and given another value",
       "",
-      `let target = page.getByRole("button");\nawait target.click();`,
-      ["target.click()"],
+      `let target = page.getByRole("button");\ntarget = page.getByRole("link");\nawait target.click();`,
+      ["target", "target.click()"],
     ],
     [
       "a global the file redefines",

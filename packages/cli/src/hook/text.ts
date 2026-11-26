@@ -109,6 +109,43 @@ export function clip(text: string, max: number): string {
   return `${kept}…`;
 }
 
+/**
+ * A path cut to at most `max` characters by dropping its start, with an
+ * ellipsis in front when anything was dropped. A path says what it is at
+ * its end: cut like `clip`, a long directory would push out the file's own
+ * name. The cut moves to the next slash, when there is one, so that no
+ * directory name is shown half.
+ */
+export function clipPath(path: string, max: number): string {
+  if (path.length <= max) {
+    return path;
+  }
+  let kept = path.slice(path.length - Math.max(0, max - 1));
+  const slash = kept.indexOf("/");
+  if (slash > 0 && slash < kept.lastIndexOf("/")) {
+    kept = kept.slice(slash);
+  }
+  // Half of a surrogate pair would print as a replacement character.
+  const first = kept.charCodeAt(0);
+  if (first >= 0xdc00 && first <= 0xdfff) {
+    kept = kept.slice(1);
+  }
+  return `…${kept}`;
+}
+
+/**
+ * `printable` for text of several lines: the line breaks and tabs stay, so
+ * a check's output still reads as output, and every other control character
+ * is escaped. Without this a check that prints a terminal escape or a bidi
+ * override would hand it to the agent as it is.
+ */
+export function printableLines(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => line.split("\t").map(printable).join("\t"))
+    .join("\n");
+}
+
 /** The message of whatever was thrown. */
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

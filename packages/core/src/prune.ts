@@ -1,6 +1,6 @@
 import { SnapshotError } from "./errors.js";
 import { estimateSnapshotTokens } from "./hash.js";
-import { projectSnapshot } from "./project.js";
+import { assertSnapshotClean, projectSnapshot } from "./project.js";
 import type { SnapshotProcessOptions } from "./project.js";
 import type { AccessibilityNode } from "./snapshot.js";
 
@@ -72,10 +72,15 @@ export interface PrunedSnapshot {
  * The order is fixed up front, so this runs in O(n log n).
  *
  * If the root alone is still over the token budget, its text is shortened:
- * name, then description, valuetext, a string value and roledescription,
+ * url, then name, description, valuetext, a string value and roledescription,
  * each dropped entirely before the next is touched. If even the bare root
  * does not fit, `SnapshotError` is thrown: a result over budget is never
  * returned. `truncated` is not part of the snapshot hash.
+ *
+ * A tree that was cut is checked for secrets again, and `RedactionError` is
+ * thrown if one is found: removing a node can bring the two halves of a
+ * seed phrase together, and a prefix of clean text can match a pattern (100
+ * hex characters are not a key; their first 64 are).
  */
 export function pruneSnapshot(
   snapshot: AccessibilityNode,
@@ -117,6 +122,9 @@ export function pruneSnapshot(
     }
     tree =
       best ?? shortenRoot(removeFirst(tree, order, order.length), maxTokens);
+  }
+  if (truncated) {
+    assertSnapshotClean(tree, options?.redact ?? [], { cut: true });
   }
 
   return {
@@ -245,11 +253,16 @@ function removeFirst(
   return rebuild(root);
 }
 
-/** Root text fields, in the order they give way to the budget. */
+/**
+ * Root text fields, in the order they give way to the budget. The URL goes
+ * first: where a link points matters less to a question about the page than
+ * what it says, and trees without a URL shorten exactly as before.
+ */
 type RootTextField =
-  "name" | "description" | "valuetext" | "value" | "roledescription";
+  "url" | "name" | "description" | "valuetext" | "value" | "roledescription";
 
 const ROOT_TEXT_FIELDS: readonly RootTextField[] = [
+  "url",
   "name",
   "description",
   "valuetext",
@@ -277,7 +290,7 @@ function shortenRoot(
   }
   if (fits(current)) return current;
   throw new SnapshotError(
-    `The snapshot root does not fit the budget of ${String(maxTokens)} tokens, even with every other node removed and its name, description, valuetext, string value and roledescription dropped (it needs ${String(estimateSnapshotTokens(current))})`,
+    `The snapshot root does not fit the budget of ${String(maxTokens)} tokens, even with every other node removed and its url, name, description, valuetext, string value and roledescription dropped (it needs ${String(estimateSnapshotTokens(current))})`,
   );
 }
 

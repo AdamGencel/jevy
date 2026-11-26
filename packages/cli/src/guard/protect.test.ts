@@ -755,3 +755,73 @@ describe("protectedPathFindings", () => {
     ]);
   });
 });
+
+describe("files the Jevy config imports", () => {
+  function rulesFor(imports: readonly string[], configDir = ""): ProtectRules {
+    return buildProtectRules({
+      settings: settings({ imports }),
+      configDir,
+      cacheDir: ".jevy/decisions",
+    });
+  }
+
+  it("protects each imported file as part of the config", () => {
+    const rules = rulesFor(["thresholds.ts", "lib/shared.js"]);
+    expect(protectionOf("thresholds.ts", rules)).toEqual({
+      reason: "config",
+      importedBy: "the Jevy config",
+    });
+    expect(protectionOf("Thresholds.TS", rules)?.reason).toBe("config");
+    expect(protectionOf("lib/shared.js", rules)?.reason).toBe("config");
+    expect(protectionOf("other.ts", rules)).toBeNull();
+    expect(protectionOf("thresholds.ts", NO_CONFIG)).toBeNull();
+  });
+
+  it("protects every file an import without its TypeScript extension can load", () => {
+    const rules = rulesFor(["lib/shared.js", "consts"]);
+    for (const path of [
+      "lib/shared.ts",
+      "lib/shared.mts",
+      "lib/shared.tsx",
+      "consts.ts",
+      "consts.js",
+      "consts.json",
+      "consts/index.ts",
+      "consts/index.mjs",
+    ]) {
+      expect(protectionOf(path, rules)?.reason, path).toBe("config");
+    }
+    expect(protectionOf("lib/shared.json", rules)).toBeNull();
+    expect(protectionOf("consts/other.ts", rules)).toBeNull();
+  });
+
+  it("takes the imports as already relative to the repository root", () => {
+    const rules = rulesFor(["web/thresholds.ts"], "web");
+    expect(protectionOf("web/thresholds.ts", rules)?.reason).toBe("config");
+    expect(protectionOf("thresholds.ts", rules)).toBeNull();
+  });
+
+  it("refuses an import outside the repository, which it cannot protect", () => {
+    expect(() => rulesFor(["../outside.ts"])).toThrow(GuardError);
+    expect(() => rulesFor(["../outside.ts"])).toThrow(/outside the repository/);
+  });
+
+  it("reports a change to an imported file as a protected path", () => {
+    const rules = rulesFor(["thresholds.ts"]);
+    const [found] = protectedPathFindings([modified("thresholds.ts")], rules);
+    expect(found?.kind).toBe("protected-path-changed");
+    expect(found?.message).toContain("imported by the Jevy config");
+  });
+
+  it("reads the imports from the config's text", () => {
+    const rules = buildProtectRules({
+      settings: readConfigSettings(
+        `import { PASS } from "./thresholds.ts";\nexport default { thresholds: { pass: PASS } };\n`,
+        "web/jevy.config.ts",
+      ),
+      configDir: "web",
+      cacheDir: "web/.jevy/decisions",
+    });
+    expect(protectionOf("web/thresholds.ts", rules)?.reason).toBe("config");
+  });
+});

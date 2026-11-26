@@ -71,6 +71,8 @@ interface World {
   readonly guardCalls: (readonly string[])[];
   /** `HEAD`, or null for a directory that is not a repository. */
   head: string | null;
+  /** The repository's top level, or null when git cannot name one. */
+  top: string | null;
   /** The branch origin/HEAD points at. */
   originHead: string | null;
   /**
@@ -99,6 +101,7 @@ function world(config: string | null = null): World {
     ran: [],
     guardCalls: [],
     head: HEAD,
+    top: REPO,
     originHead: null,
     committed: new Map(),
     readAtCalls: [],
@@ -120,6 +123,7 @@ function world(config: string | null = null): World {
       refExists: (ref) => Promise.resolve(out.refs.has(ref)),
       git: {
         head: () => Promise.resolve(out.head),
+        topLevel: () => Promise.resolve(out.top),
         originHead: () => Promise.resolve(out.originHead),
         readAt: (commit, path, cwd) => {
           const key = `${commit}:${path}`;
@@ -880,7 +884,8 @@ describe("jevy hook stop", () => {
       expect(stderr).toContain(
         `  tests/checkout.spec.ts: skip-added, line 4, in "${"x".repeat(119)}…": test is now skipped\n`,
       );
-      expect(stderr).toContain(`${"d/".repeat(99)}d…: assertion-removed`);
+      // A long path keeps its end, where the file's own name is.
+      expect(stderr).toContain(`  …/${"d/".repeat(97)}a.ts: assertion-removed`);
       expect(stderr).toContain("  tests/b.spec.ts: test-removed");
       expect(stderr).toContain(
         `Check failed (exit 1): node ${"y".repeat(194)}…\n  boom\n`,
@@ -932,6 +937,42 @@ describe("jevy hook stop", () => {
       expect(stderr).toContain(`and ${String(200 - shown)} more failures\n`);
     });
 
+    it("keeps the file's name when a long directory has to be cut", async () => {
+      const file = `${"packages/".repeat(40)}checkout/pays-by-card.spec.ts`;
+      const w = world();
+      w.guard = guardFound([{ ...SKIP, file }]);
+      const { stderr } = await attempt(w, false);
+      expect(stderr).toMatch(
+        /\n {2}…\/[a-z/]*\/checkout\/pays-by-card\.spec\.ts: skip-added/,
+      );
+      await attempt(w);
+      expect(systemMessage(await attempt(w))).toMatch(
+        /- jevy guard: skip-added in …\/[a-z/]*\/checkout\/pays-by-card\.spec\.ts/,
+      );
+    });
+
+    it("escapes control characters in the output of a check and of the guard", async () => {
+      const w = world(CHECKS);
+      w.results.set("pnpm lint", {
+        code: 1,
+        timedOut: false,
+        output: "\u001b[31mred\u001b[0m\n\u202eevil\tcol\n",
+      });
+      w.guard = {
+        code: 2,
+        stdout: "",
+        stderr: "jevy guard: \u001b]0;x\u0007 broke\n",
+      };
+      const { stderr } = await attempt(w, false);
+      expect(stderr).toContain(
+        "  \\u001b[31mred\\u001b[0m\n  \\u202eevil\tcol\n",
+      );
+      expect(stderr).toContain("\\u001b]0;x\\u0007 broke");
+      for (const raw of ["\u001b", "\u0007", "\u202e"]) {
+        expect(stderr).not.toContain(raw);
+      }
+    });
+
     it("gives the guard's own error text to the person as well", async () => {
       const w = world();
       w.guard = {
@@ -958,6 +999,38 @@ describe("jevy hook stop", () => {
       REPO,
       "--json",
     ];
+
+    it("finds the record from a --cwd below the repository's root", async () => {
+      // session-start ran at the root, as the printed snippet runs it; the
+      // stop hook was told to run in the directory of the config.
+      const w = world();
+      const app = `${REPO}/packages/app`;
+      w.files.set(`${app}/jevy.config.ts`, CHECKS);
+      recordStart(w);
+      w.guardBy.set(START, guardFound([SKIP]));
+      w.stdin = stopInput(false);
+      const result = await runStop(["--cwd", app], w.deps);
+      expect(w.guardCalls).toContainEqual([
+        "--base",
+        START,
+        "--cwd",
+        app,
+        "--json",
+      ]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(SINCE_START);
+    });
+
+    it("blocks when git cannot name the repository's top level in a repository", async () => {
+      const w = world(CHECKS);
+      recordStart(w);
+      w.top = null;
+      const result = await attempt(w, false);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(
+        "The hook cannot find the root of the repository, so it cannot find its record of where this session started.",
+      );
+    });
 
     it("runs the guard a second time, against the commit the session started from", async () => {
       const w = world(CHECKS);
@@ -1321,6 +1394,7 @@ describe("jevy hook stop", () => {
           "  killed while it was running: pnpm hang",
           "  not started: pnpm test",
           "  not finished: jevy guard",
+          "  not finished: the comparison of the config with the start of the session",
           "",
           CLOSING,
         ].join("\n"),
@@ -1431,6 +1505,58 @@ describe("jevy hook stop", () => {
       );
       expect(message).toContain("- killed while it was running: pnpm hang");
       expect(message).toContain("- not finished: jevy guard");
+    });
+
+    it("names the comparison of the config when that is what did not finish", async () => {
+      const w = world(CHECKS);
+      w.stdin = stopInput(false);
+      const result = await runStop(["--deadline", "0.05"], {
+        ...w.deps,
+        git: { ...w.deps.git, readAt: never },
+      });
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(
+        "passed while it was comparing the config with the start of the session. What did not finish has not passed:\n  not finished: the comparison of the config with the start of the session\n",
+      );
+    });
+
+    it("names the checks when the config was never read", async () => {
+      const w = world(CHECKS);
+      w.stdin = stopInput(false);
+      const result = await runStop(["--deadline", "0.05"], {
+        ...w.deps,
+        readFile: never,
+      });
+      expect(result.stderr).toContain(
+        "  not started: the checks (the config was not read)\n",
+      );
+    });
+
+    it("names the checks that never started while it read the session's record", async () => {
+      const w = world(CHECKS);
+      w.stdin = stopInput(false);
+      const result = await runStop(["--deadline", "0.05"], {
+        ...w.deps,
+        state: { ...w.deps.state, read: never },
+      });
+      expect(result.stderr).toContain(
+        "  not started: pnpm lint\n  not started: pnpm test\n",
+      );
+    });
+
+    it("hands the guard its signal, which aborts when the deadline passes", async () => {
+      const w = world(CHECKS);
+      w.stdin = stopInput(false);
+      let signal: AbortSignal | undefined;
+      const result = await runStop(["--deadline", "0.05"], {
+        ...w.deps,
+        guard: (_argv, given) => {
+          signal = given;
+          return never();
+        },
+      });
+      expect(result.code).toBe(2);
+      expect(signal?.aborted).toBe(true);
     });
 
     it("does not report a deadline when everything finished in time", async () => {
@@ -1563,6 +1689,7 @@ describe("jevy hook stop with real commands and a real state file", () => {
       // The temporary directory is not a repository.
       git: {
         head: () => Promise.resolve(null),
+        topLevel: () => Promise.resolve(null),
         originHead: () => Promise.resolve(null),
         readAt: () => Promise.reject(new Error("not a repository")),
         trackedConfigs: () => Promise.resolve([]),

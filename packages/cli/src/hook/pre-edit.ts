@@ -9,6 +9,7 @@ import {
 } from "node:path";
 import type { CliResult } from "../cli.js";
 import {
+  CONFIG_FILENAMES,
   findConfig,
   readConfigSettings,
   type ConfigSettings,
@@ -50,7 +51,11 @@ export const PRE_EDIT_USAGE = `Usage: jevy hook pre-edit [--cwd <dir>] [--deadli
 A hook that runs before a coding agent edits a file. Reads the agent's hook
 input (JSON with tool_name and tool_input) on stdin and blocks the edit when
 the file is a protected path: a jevy.config.*, a file in the decision cache,
-the wallet policy file, or a path matched by \`protect\` in the config.
+the wallet policy file, or a path matched by \`protect\` in the config. The
+files that run the hooks are always protected, with no config needed:
+node_modules/.bin/jevy, node_modules/@jevyjs/**, .claude/settings.json and
+.claude/settings.local.json, in the project directory and at the root of the
+repository.
 
   --cwd <dir>           The project directory: the one with jevy.config.*.
                         Default: the current directory.
@@ -228,23 +233,20 @@ async function readings(written: string, fs: Lookups): Promise<string[]> {
 }
 
 /**
- * The project-relative paths that `named` could be, most literal first.
+ * The project-relative paths that `readings` could be, most literal first.
  *
  * The project directory may itself be reached through a symlink (on macOS
  * the temp directory always is), so every reading of the path is placed
  * against the project directory as written and as resolved. The edit is
  * refused when any of the results is protected. A path with no result is
- * outside the project, and not this project's to protect.
+ * outside the project.
  */
-async function candidates(
-  named: string,
-  from: string,
-  projectDir: string,
-  fs: Lookups,
-): Promise<string[]> {
-  const roots = [projectDir, await resolveExisting(projectDir, fs)];
+function candidates(
+  readings: readonly string[],
+  roots: readonly string[],
+): string[] {
   const out = new Set<string>();
-  for (const reading of await readings(resolve(from, named), fs)) {
+  for (const reading of readings) {
     for (const root of roots) {
       const path = inside(root, reading);
       if (path !== null) {
@@ -253,6 +255,101 @@ async function candidates(
     }
   }
   return [...out];
+}
+
+/*
+ * The files that run the hooks. The settings snippet runs
+ * ./node_modules/.bin/jevy, which runs @jevyjs/cli, and Claude Code reads
+ * which hooks to run from its settings files. One Write to any of them
+ * (`exit 0` in place of the executable, a settings file with no hooks)
+ * switches every hook off, and git shows nothing: node_modules is ignored,
+ * and so usually is .claude/settings.local.json. So they are protected
+ * whatever the config says, in the project directory and at the root of
+ * the repository, where Claude Code also looks.
+ */
+
+/** Files, relative to a root. */
+const HOOK_FILES = [
+  ".claude/settings.json",
+  ".claude/settings.local.json",
+  "node_modules/.bin/jevy",
+] as const;
+
+/** Directories, relative to a root, protected with all they hold. */
+const HOOK_TREES = ["node_modules/@jevyjs"] as const;
+
+/**
+ * The installed package, whose real directory is protected too: pnpm keeps
+ * it in its store under node_modules/.pnpm and links it in, and a Write to
+ * the store's path changes the same file.
+ */
+const HOOK_PACKAGE = "node_modules/@jevyjs/cli";
+
+/** Absolute paths, case folded, of what runs the hooks. */
+interface HookLocations {
+  readonly files: readonly string[];
+  readonly trees: readonly string[];
+}
+
+/**
+ * Case folded: on a disk that ignores case, as macOS and Windows do by
+ * default, `.Claude/Settings.json` is the settings file. On one that does
+ * not, this protects a second file too, which is the safe direction.
+ */
+function fold(path: string): string {
+  return path.toLowerCase();
+}
+
+/**
+ * Where the files that run the hooks are under each of `roots`, as written
+ * and with symlinks resolved: a settings file may be a link to another
+ * file, which Claude Code then reads.
+ */
+async function hookLocations(
+  roots: readonly string[],
+  fs: Lookups,
+): Promise<HookLocations> {
+  const files: string[] = [];
+  const trees: string[] = [];
+  for (const root of new Set(roots)) {
+    for (const file of HOOK_FILES) {
+      files.push(join(root, file));
+    }
+    for (const file of HOOK_FILES.filter((name) =>
+      name.startsWith(".claude"),
+    )) {
+      files.push(await resolveExisting(join(root, file), fs));
+    }
+    for (const tree of HOOK_TREES) {
+      trees.push(join(root, tree));
+    }
+    trees.push(await resolveExisting(join(root, HOOK_PACKAGE), fs));
+  }
+  return { files: files.map(fold), trees: trees.map(fold) };
+}
+
+/** The first of `readings` that is a file that runs the hooks, or null. */
+function hookFile(
+  readings: readonly string[],
+  where: HookLocations,
+): string | null {
+  return (
+    readings.find((reading) => {
+      const folded = fold(reading);
+      return (
+        where.files.includes(folded) ||
+        where.trees.some(
+          (tree) => tree === folded || inside(tree, folded) !== null,
+        )
+      );
+    }) ?? null
+  );
+}
+
+/** Whether `path`, repository-relative, names a Jevy config. */
+function isConfigName(path: string): boolean {
+  const name = fold(path.split("/").at(-1) ?? "");
+  return CONFIG_FILENAMES.some((config) => config === name);
 }
 
 /** The settings whose value decides which paths are protected. */
@@ -338,7 +435,11 @@ async function readRules(
 function why(protection: Protection): string {
   switch (protection.reason) {
     case "config":
-      return "it is the Jevy config";
+      // A file the config imports can change a setting as surely as the
+      // config itself; say which, so the agent does not hunt for a config.
+      return protection.importedBy === undefined
+        ? "it is the Jevy config"
+        : `it is imported by ${protection.importedBy}`;
     case "cache":
       return "it is in the decision cache";
     case "policy":
@@ -358,9 +459,9 @@ const ALLOW: CliResult = { code: 0, stdout: "", stderr: "" };
  * The advice names the ways round on purpose. An agent told only "blocked"
  * tends to try `sed` or a script next, which this hook does not see.
  */
-function protectedPath(path: string, protection: Protection): CliResult {
+function protectedPath(path: string, reason: string): CliResult {
   return refuse(
-    `${printable(path)} is protected: ${why(protection)}.\nDo not change it, and do not change it another way (a shell command, a script). Ask the maintainer to make or approve this change.`,
+    `${printable(path)} is protected: ${reason}.\nDo not change it, and do not change it another way (a shell command, a script). Ask the maintainer to make or approve this change.`,
   );
 }
 
@@ -387,21 +488,72 @@ async function check(
   }
   // A relative path is relative to where the agent is, which the input says.
   const from = resolve(projectDir, input.cwd ?? ".");
-  const paths: string[] = [];
+  const all: string[] = [];
   for (const path of named) {
-    paths.push(...(await candidates(path, from, projectDir, deps)));
+    all.push(...(await readings(resolve(from, path), deps)));
   }
+  const roots = [projectDir, await resolveExisting(projectDir, deps)];
+  const shown = (reading: string): string =>
+    roots.map((root) => inside(root, reading)).find((path) => path !== null) ??
+    reading;
+  const top = await deps.git.topLevel(projectDir);
+  // First, and with no config needed: these keep the hooks themselves
+  // working, and a config that cannot be read must not open them.
+  const hook = hookFile(
+    all,
+    await hookLocations(top === null ? roots : [...roots, top], deps),
+  );
+  if (hook !== null) {
+    return protectedPath(
+      shown(hook),
+      "it keeps the Jevy hooks themselves working",
+    );
+  }
+  const paths = candidates(all, roots);
   if (paths.length === 0) {
-    return ALLOW;
+    return checkOutside(all, top, projectDir, deps);
   }
   const rules = await readRules(projectDir, deps);
   for (const path of paths) {
     const protection = protectionOf(path, rules);
     if (protection !== null) {
-      return protectedPath(path, protection);
+      return protectedPath(path, why(protection));
     }
   }
   return ALLOW;
+}
+
+/**
+ * A path outside the project directory. Outside the repository too, it is
+ * not this project's to protect. Inside it, the config is read as for any
+ * edit, so that a config in another directory, or one that cannot be read,
+ * refuses the edit: the hook started below the config's directory would
+ * otherwise wave an edit to the config itself through. A Jevy config
+ * anywhere in the repository is protected, as the guard protects it; the
+ * project's `protect` list is relative to its own directory and does not
+ * reach here.
+ */
+async function checkOutside(
+  readings: readonly string[],
+  top: string | null,
+  projectDir: string,
+  deps: HookDeps,
+): Promise<CliResult> {
+  const inRepo =
+    top === null
+      ? undefined
+      : readings.find((reading) => inside(top, reading) !== null);
+  if (top === null || inRepo === undefined) {
+    return ALLOW;
+  }
+  await readRules(projectDir, deps);
+  const config = readings.find((reading) => {
+    const path = inside(top, reading);
+    return path !== null && isConfigName(path);
+  });
+  return config === undefined
+    ? ALLOW
+    : protectedPath(config, "it is the Jevy config");
 }
 
 /**

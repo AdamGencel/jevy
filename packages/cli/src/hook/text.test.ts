@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { clip, CUT_MARKER, indent, printable, tail } from "./text.js";
+import {
+  clip,
+  clipPath,
+  CUT_MARKER,
+  indent,
+  printable,
+  printableLines,
+  tail,
+} from "./text.js";
 
 function numbered(count: number): string {
   return Array.from({ length: count }, (_, i) => `line ${String(i + 1)}`).join(
@@ -89,5 +97,36 @@ describe("clip", () => {
 
   it("does not cut a surrogate pair in half", () => {
     expect(clip("ab😀cd", 4)).toBe("ab…");
+  });
+});
+
+describe("clipPath", () => {
+  it("keeps a short path as it is", () => {
+    expect(clipPath("src/a.spec.ts", 20)).toBe("src/a.spec.ts");
+  });
+
+  it("keeps the end, from a slash, so the file's own name is never cut", () => {
+    const path = `${"long-directory/".repeat(20)}checkout/pays.spec.ts`;
+    const clipped = clipPath(path, 40);
+    expect(clipped.length).toBeLessThanOrEqual(40);
+    expect(clipped).toBe("…/long-directory/checkout/pays.spec.ts");
+  });
+
+  it("keeps the end of a name longer than the room", () => {
+    expect(clipPath(`dir/${"x".repeat(50)}.ts`, 10)).toBe(
+      `…${"x".repeat(6)}.ts`,
+    );
+  });
+
+  it("does not start with half of a surrogate pair", () => {
+    expect(clipPath("😀".repeat(10), 4)).toBe("…😀");
+  });
+});
+
+describe("printableLines", () => {
+  it("keeps line breaks and tabs and escapes every other control character", () => {
+    expect(printableLines("\u001b[31mred\tx\n\u202eevil\r\n")).toBe(
+      "\\u001b[31mred\tx\n\\u202eevil\\r\n",
+    );
   });
 });

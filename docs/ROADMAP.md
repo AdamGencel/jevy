@@ -1,6 +1,6 @@
 # Jevy — Roadmap
 
-Status: **the toolchain and steps 1 and 2 are done. Step 3 is next, and step 5 can be built beside it.** Jevy is a personal project with one maintainer (Adam Gencel). No step has a date: each one lists what it delivers and how we know it is done.
+Status: **the toolchain and steps 1 to 3 are done. Step 4 is next; it needs network access and a model key. Step 5 needs neither and can start now.** Jevy is a personal project with one maintainer (Adam Gencel). No step has a date: each one lists what it delivers and how we know it is done.
 
 ## Direction
 
@@ -52,21 +52,26 @@ The guard used to report a weakened test after the fact. This step stops it insi
 
 Hooks for agents other than Claude Code are not built. They follow where an agent offers an equivalent.
 
-### Step 3 — First end-to-end slice
+### Step 3 — First end-to-end slice (done, 26 Nov 2026)
 
-- `@jevyjs/deciders-llm`: `llmDecider` over a user-supplied adapter, with structured output, validation, an explicit abstain option, and a compact snapshot format for the prompt. A published fake decider for tests.
-- `@jevyjs/playwright`: `expect(page | locator).toSatisfy(statement)` on `@playwright/test`. Locator-scoped by default in the docs.
-- **Advisory by default.** A `fail` or `needs-review` from `toSatisfy` is reported and does not fail the build until a project switches blocking on. Exact assertions in code still fail as usual.
-- `report.json` v1: verdict, source (cache or decider), miss reason, truncation, decider and model, per assertion.
-- Cache items carried from step 1: whether a key should be scoped to its spec, and how a retry that passes on a remembered answer gets its record written.
-- Snapshot items carried from step 1: a link's URL is not in the tree; a password field switched to plain text by a "show password" control is not recognised as secret.
-- Done when: a fixture app passes, fails and returns `needs-review` as expected; a second run in `replay` makes no decider call; an agent can act on `report.json` alone.
+A test author writes `await expect(locator).toSatisfy("…")` and gets a verdict, a committed record, a replay with no model call, and a report an agent can read. Eight work packages, each built test-first and then reviewed independently. What they built is described in DESIGN.md §5.3 to §6.3 and §7, and the build plan, with what changed from it, is in [plans/step-3.md](plans/step-3.md).
+
+| # | Package | Delivers |
+|---|---|---|
+| 3a | Core: cache and config | The cache key covers the spec (key and record version 2). A retry that passes on a remembered answer writes its record. The first answer wins across processes. `DeciderError`. The `toSatisfy.blocking` config key, off by default. |
+| 3b | Core: snapshot | A link's URL is in the snapshot and its hash, cut to scheme, host and path (rules version 3). `renderSnapshot` gives the compact form a model reads. `isSecretFieldName` is exported. |
+| 3c | `deciders-llm` | `llmDecider` over a user-supplied adapter: structured output, strict validation, an explicit abstain option, the rendered snapshot in the prompt, bounded attempts. A fake decider for tests. No dependency beyond core. |
+| 3d | Matcher and fixtures | `expect(page \| locator).toSatisfy(statement)` with `test.use({ decider })`. Advisory by default; `fail` and `needs-review` follow the policy once blocking is on. An answer is saved only when its test passes. Workers of one run share the run memo, so a retry in a new worker reuses the first answer. |
+| 3e | `report.json` v1 | A reporter that writes, per assertion, the verdict, source, reason, mode and effect, plus how the run ended and which tests were cut short. Deterministic, with no page text. |
+| 3f | Snapshot bridge | Link URLs are kept, with secrets scrubbed from them. A password field switched to plain text by a "show password" button stays blanked. |
+| 3g | Guard | `@jevyjs/playwright` is a framework module. `only-advisory-assertions` (review) for a test only an advisory `toSatisfy` can fail; `blocking-switched-off` (weakening). |
+| 3h | Integration and docs | A fixture Playwright project run by Vitest: pass, fail and `needs-review` in record mode; replay with no model call; a changed page; a retry; blocking on; an agent acting on `report.json` alone; the guard on the same files. |
 
 ### Step 4 — Measure the two risky assumptions
 
 - **Hash stability.** Snapshot three real apps repeatedly over several days and report how often the hash of an unchanged page changes, per page and per region.
 - **Judge accuracy.** About 30 hand-labelled cases through the LLM decider: accuracy, `needs-review` rate, and how often a confident answer is wrong.
-- Needs network access and a model key. It can run any time after step 3 and blocks only two things: making `toSatisfy` blocking, and the final shape of the cache key.
+- Needs network access and a model key. It blocks only two things: advising projects to switch `toSatisfy` to blocking, and the final shape of the cache key.
 - Done when: both numbers are written up, with a decision on whether whole-page hashing stays and on when a project may switch blocking on.
 
 ### Step 5 — The app map and test fingerprints
@@ -76,7 +81,7 @@ To judge whether a test is worth having, Jevy has to know the app and what is al
 - **App map.** Routes, pages and API endpoints read from the codebase, written to a file a person can read. The project marks critical areas, for example login, payments and wallet signing.
 - **Test fingerprint.** For each test, recorded from a real run: the pages it visits, the elements it interacts with, what it asserts, the endpoints it calls, and the client code it executes.
 - **Coverage view.** Which parts of the map are covered, by which tests, and which critical areas are not covered at all.
-- No model is needed. It can be built alongside step 3.
+- No model is needed. It can be built alongside step 4.
 - Done when: on a fixture app the map lists every route and the tests that touch it; a fingerprint is identical across two runs of an unchanged test; an uncovered critical area is reported.
 
 ### Step 6 — Tests that earn their place
@@ -157,7 +162,7 @@ How each test has behaved over time: passes, failures, flakes, durations, verdic
 - Setup guide, demo videos, npm publish with provenance, `"private": true` removed.
 - Open questions 4 and 5 have written answers from TypeSafe recorded in OPEN-QUESTIONS.
 
-**Order.** Steps 3 and 5 can start now and run side by side. Step 4 follows step 3 whenever network access and a model key are available. Steps 6, 7, 8 and 9 follow in that order. Steps 10, 11 and 12 can run in parallel once step 3 is done. Step 13 follows step 6.
+**Order.** Steps 4 and 5 can start now and run side by side; step 4 waits only for network access and a model key. Steps 6, 7, 8 and 9 follow in that order. Steps 10, 11 and 12 can run in parallel now that step 3 is done. Step 13 follows step 6.
 
 ## Later or unscheduled
 

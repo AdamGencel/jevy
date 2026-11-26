@@ -27,11 +27,16 @@ export type FindingKind =
   | "assertion-not-visible"
   | "assertion-cannot-fail"
   | "only-checks-mocks"
+  // A new or changed test that only an advisory toSatisfy can fail.
+  | "only-advisory-assertions"
   // Paths an agent must not change without a person.
   | "protected-path-changed"
+  // A submodule (or nested repository) where tests or protected paths are.
+  | "submodule-changed"
   // jevy.config.* and playwright.config.*.
   | "threshold-lowered"
   | "needs-review-relaxed"
+  | "blocking-switched-off"
   | "redaction-rules-changed"
   | "normalise-rules-changed"
   | "decider-changed"

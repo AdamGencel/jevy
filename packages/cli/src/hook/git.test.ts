@@ -10,7 +10,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { gitHead, gitOriginHead, gitReadAt, gitTrackedConfigs } from "./git.js";
+import {
+  gitHead,
+  gitOriginHead,
+  gitReadAt,
+  gitTopLevel,
+  gitTrackedConfigs,
+} from "./git.js";
 
 /** The hook's git queries against a real repository in a temporary directory. */
 
@@ -136,5 +142,31 @@ describe("the hook's git queries", () => {
       "refs/remotes/origin/trunk",
     );
     expect(await gitOriginHead(repo)).toBe("trunk");
+  });
+
+  it("gitTopLevel is the repository's root with symlinks resolved, from any directory in it", async () => {
+    expect(await gitTopLevel(repo)).toBe(repo);
+    expect(await gitTopLevel(join(repo, "packages", "app"))).toBe(repo);
+    symlinkSync(repo, join(base, "repo-link"), "dir");
+    expect(await gitTopLevel(join(base, "repo-link", "packages"))).toBe(repo);
+    expect(await gitTopLevel(outside)).toBeNull();
+    expect(await gitTopLevel(join(base, "missing"))).toBeNull();
+  });
+
+  it("does not see through git replace", async () => {
+    // `git replace <old> <new>` makes git show <new> wherever <old> is
+    // asked for. An agent could point the session's start at HEAD and hide
+    // what it committed; the hooks ask git to ignore replacements.
+    write("packages/app/jevy.config.ts", "export default { a: 3 };\n");
+    git("commit", "-q", "-am", "third");
+    const third = git("rev-parse", "HEAD");
+    git("replace", first, third);
+    try {
+      expect(await gitReadAt(first, "packages/app/jevy.config.ts", repo)).toBe(
+        "export default { a: 1 };\n",
+      );
+    } finally {
+      git("replace", "-d", first);
+    }
   });
 });

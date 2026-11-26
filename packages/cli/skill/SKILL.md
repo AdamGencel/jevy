@@ -28,3 +28,7 @@ Exit codes of `guard`: 0 clean, 1 findings at or above `--fail-on`, 2 it could n
 ## Where the report is
 
 `jevy guard` prints its findings to stdout. `weakening` fails, `review` needs a person, `info` is for the record. Each finding has a kind, a file, a test and a line. With `--json`, read `summary` and `findings`. When the stop hook blocks, its reason lists the failed checks and the findings: fix the cause, then stop again.
+
+After a Playwright run, `toSatisfy` results are in `jevy-report/report.json`. Act on each entry whose `verdict` is not `pass` by its `reason`, at its `spec` and `line`:
+`no-entry`, `model-changed`, `redaction-changed` or `decider-error`: run that spec locally, without `CI`, and commit the new records. `answered-no`: fix the app; change the statement only if it is wrong, and say so.
+Anything else, and every test in `incomplete`, goes to a person. An advisory verdict does not fail the run, but it still needs this.

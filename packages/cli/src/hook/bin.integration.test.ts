@@ -8,9 +8,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { startPath, statePath } from "./state.js";
 
 /**
  * The built `jevy` executable as Claude Code runs it: a process with an
@@ -47,18 +48,89 @@ function fresh(name: string): string {
 }
 
 /** `jevy hook <args>` with `input` on stdin, ended. */
-function jevy(args: readonly string[], input = ""): Ended {
+function jevy(
+  args: readonly string[],
+  input = "",
+  env: Readonly<Record<string, string>> = {},
+): Ended {
   const result = spawnSync(process.execPath, [BIN, "hook", ...args], {
     cwd: base,
     input,
     encoding: "utf8",
     timeout: 60_000,
+    env: { ...process.env, ...env },
   });
   return {
     status: result.status,
     stdout: result.stdout,
     stderr: result.stderr,
   };
+}
+
+/**
+ * As `jevy`, without blocking the test's own thread, and killed after 30 s
+ * so that a hook that hangs fails the test instead of holding it.
+ */
+function jevyAsync(
+  args: readonly string[],
+  input: string,
+  env: Readonly<Record<string, string>> = {},
+): Promise<Ended> {
+  const child = spawn(process.execPath, [BIN, "hook", ...args], {
+    cwd: base,
+    env: { ...process.env, ...env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  child.stdin.end(input);
+  const kill = setTimeout(() => {
+    child.kill("SIGKILL");
+  }, 30_000);
+  return new Promise((resolve) => {
+    child.on("close", (status) => {
+      clearTimeout(kill);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+function gitIn(dir: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+}
+
+const TWO_TESTS = `import { test, expect } from "vitest";
+test("one", () => { expect(1).toBe(1); });
+test("two", () => { expect(2).toBe(2); });
+`;
+
+const ONE_TEST = `import { test, expect } from "vitest";
+test("one", () => { expect(1).toBe(1); });
+`;
+
+/** A git repository in `dir` with this config and these files, committed. */
+function repoAt(
+  dir: string,
+  config: string,
+  files: Readonly<Record<string, string>> = {},
+): void {
+  gitIn(dir, "init", "-q", "-b", "main");
+  gitIn(dir, "config", "user.name", "Jevy Test");
+  gitIn(dir, "config", "user.email", "jevy-test@example.invalid");
+  gitIn(dir, "config", "commit.gpgsign", "false");
+  writeFileSync(join(dir, "jevy.config.ts"), config);
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+  gitIn(dir, "add", "-A");
+  gitIn(dir, "commit", "-q", "-m", "init");
 }
 
 describe.skipIf(!usable)(title, () => {
@@ -130,6 +202,89 @@ describe.skipIf(!usable)(title, () => {
       );
       expect(result.status).toBe(2);
     });
+  });
+
+  describe("with a FIFO where the hook keeps what it remembers", () => {
+    /**
+     * A plain read or write of a FIFO holds one of Node's worker threads
+     * until the other end is opened, and `process.exit` waits for that
+     * thread: the hook would write its answer and then run until Claude
+     * Code cancels it, which lets the agent stop.
+     */
+    it.each([
+      ["the stop count", "count"],
+      ["the record of the session's start", "start"],
+    ] as const)(
+      "hook stop exits 2 within its deadline: FIFO at %s",
+      async (_name, which) => {
+        const dir = fresh(`fifo-state-${which}`);
+        const stateDir = fresh(`fifo-state-${which}-tmp`);
+        repoAt(dir, `export default { checks: ["false"] };\n`);
+        const path =
+          which === "count"
+            ? statePath(stateDir, dir, "s1")
+            : startPath(stateDir, dir, "s1");
+        execFileSync("mkfifo", [path]);
+        const started = Date.now();
+        const result = await jevyAsync(
+          ["stop", "--cwd", dir, "--deadline", "3"],
+          JSON.stringify({ session_id: "s1", stop_hook_active: false }),
+          { TMPDIR: stateDir },
+        );
+        expect(Date.now() - started).toBeLessThan(5000);
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(
+          "jevy hook stop: the work is not done.",
+        );
+      },
+      30_000,
+    );
+  });
+
+  describe("git replace", () => {
+    it("does not hide what the session committed", () => {
+      const dir = fresh("replace");
+      const stateDir = fresh("replace-tmp");
+      repoAt(dir, `export default { checks: ["true"] };\n`, {
+        "src/a.test.ts": TWO_TESTS,
+      });
+      const env = { TMPDIR: stateDir };
+      const input = JSON.stringify({ session_id: "s1" });
+      expect(jevy(["session-start", "--cwd", dir], input, env).status).toBe(0);
+      const start = gitIn(dir, "rev-parse", "HEAD");
+      writeFileSync(join(dir, "src", "a.test.ts"), ONE_TEST);
+      gitIn(dir, "commit", "-q", "-am", "weaken");
+      gitIn(dir, "replace", start, "HEAD");
+      const result = jevy(["stop", "--cwd", dir], input, env);
+      expect(result.stderr).toContain("since the session's start");
+      expect(result.status).toBe(2);
+    });
+  });
+
+  describe("a guard that takes too long", () => {
+    it("is killed at the deadline, and the hook blocks in time", async () => {
+      const dir = fresh("slow-guard");
+      const lines = ['import { test, expect } from "vitest";'];
+      for (let index = 0; index < 200_000; index += 1) {
+        const n = String(index);
+        lines.push(`test("t${n}", () => { expect(${n}).toBe(${n}); });`);
+      }
+      repoAt(dir, `export default { checks: ["true"] };\n`, {
+        "src/a.test.ts": `${lines.join("\n")}\n`,
+      });
+      writeFileSync(
+        join(dir, "src", "a.test.ts"),
+        `${lines.join("\n").replaceAll("toBe(", "toEqual(")}\n`,
+      );
+      const started = Date.now();
+      const result = await jevyAsync(
+        ["stop", "--cwd", dir, "--deadline", "1"],
+        "",
+      );
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(result.stderr).toContain("not finished: jevy guard");
+      expect(result.status).toBe(2);
+    }, 60_000);
   });
 
   describe("when the deadline passes", () => {

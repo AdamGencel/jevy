@@ -7,6 +7,7 @@ import {
   GLOB_CACHE_LIMIT,
   globCacheSize,
   matchesGlob,
+  reachesInto,
 } from "./glob.js";
 
 // glob-table:start
@@ -31,6 +32,8 @@ const GLOB_TABLE = {
     ".jevy/**",
     "app/(marketing)/**",
     "tests/my dir/*.ts",
+    "my docs/plan.md",
+    "{my docs,a b}/**",
     "a+b$^.ts",
     "{a,b}".repeat(8),
   ],
@@ -40,6 +43,13 @@ const GLOB_TABLE = {
     " tests/**",
     "tests/** ",
     "\ttests/**",
+    "{plans, tests/critical}/**",
+    "{plans,tests/critical }/**",
+    "tests/critical /**",
+    "tests/ critical/**",
+    "{a,b }/x",
+    "a{ b,c}",
+    "tests/\t/**",
     "!tests/**",
     "./!x",
     "{!a,b}",
@@ -316,6 +326,9 @@ describe("checkGlob", () => {
   it.each([
     [" tests/**", /whitespace/],
     ["tests/** ", /whitespace/],
+    ["{plans, tests/critical}/**", /whitespace at the start or end of a/],
+    ["tests/critical /**", /whitespace at the start or end of a path segment/],
+    ["a{ b,c}", /whitespace at the start or end of a brace alternative/],
     ["./!x", /negation/],
     ["{!a,b}", /negation/],
     ["{/etc,a}", /absolute/],
@@ -371,5 +384,26 @@ describe("checkGlob", () => {
     expect(() => {
       checkGlob("!tests/**");
     }).toThrow('invalid glob "!tests/**": negation (!) is not supported');
+  });
+});
+
+describe("reachesInto", () => {
+  it("is true when the glob matches the directory, one above it, or a path inside it", () => {
+    expect(reachesInto("e2e/fixtures/app", "e2e/**")).toBe(true);
+    expect(reachesInto("e2e/fixtures/app", "e2e")).toBe(true);
+    expect(reachesInto("e2e/fixtures/app", "**/*.spec.ts")).toBe(true);
+    expect(reachesInto("e2e/fixtures/app", "e2e/fixtures/app/tests/**")).toBe(
+      true,
+    );
+    expect(reachesInto("e2e/fixtures/app", "e2e/*/app/a.ts")).toBe(true);
+  });
+
+  it("is false when nothing inside the directory can match", () => {
+    expect(reachesInto("vendor/app", "e2e/**")).toBe(false);
+    expect(reachesInto("e2e/fixtures/app", "e2e/fixtures/other/**")).toBe(
+      false,
+    );
+    expect(reachesInto("", "**")).toBe(false);
+    expect(reachesInto("a", "[a]")).toBe(false);
   });
 });

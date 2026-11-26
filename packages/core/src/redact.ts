@@ -1,6 +1,7 @@
 import { BIP39_ENGLISH_WORDS } from "./bip39-english.js";
 import { RedactionError } from "./errors.js";
 import { collapseWhitespace, isRecord } from "./guards.js";
+import { reduceUrl } from "./normalise.js";
 import type { AccessibilityNode } from "./snapshot.js";
 import type { WalletContext } from "./decider.js";
 import { validateSnapshot } from "./validate.js";
@@ -14,6 +15,18 @@ const SECRET_FIELD_NAME =
   /password|passcode|passphrase|secret|api[-_ ]?key|mnemonic|seed[-_ ]?phrase|recovery[-_ ]?(?:phrase|words?)|private[-_ ]?key/i;
 
 const SECRET_FIELD_ROLES = new Set(["textbox", "searchbox"]);
+
+/**
+ * True when a field's label or description names a secret: password,
+ * passcode, passphrase, secret, API key, mnemonic, seed phrase, recovery
+ * phrase or words, or private key, with or without a space, hyphen or
+ * underscore (`privateKey` counts). Exported so a snapshot source (the
+ * Playwright bridge) recognises the same fields core does, instead of
+ * keeping its own copy of the rule.
+ */
+export function isSecretFieldName(text: string): boolean {
+  return SECRET_FIELD_NAME.test(text);
+}
 
 /**
  * `autocomplete` tokens that mark a field as secret whatever its label says.
@@ -151,6 +164,20 @@ export function redactText(
 }
 
 /**
+ * Redact a link's URL. It is reduced to scheme, host and path first
+ * (`reduceUrl`), so a token in the query string or a script in a
+ * `javascript:` URL is dropped whether or not a text rule would have
+ * recognised it. What is left goes through the text rules, and is reduced
+ * again so a replacement cannot leave a query string behind.
+ */
+export function redactUrl(
+  input: string,
+  rules: readonly RedactRule[] = [],
+): string {
+  return reduceUrl(redactText(reduceUrl(input), rules));
+}
+
+/**
  * Copy a snapshot with secrets and direct personal data removed.
  * Structural fields (role, checked, disabled, …) are kept.
  * A malformed, cyclic or too-deep snapshot throws `SnapshotError` before any
@@ -164,13 +191,26 @@ export function redactSnapshot(
   return redactSplitSeedPhrases(redactNode(snapshot, rules));
 }
 
-type SeedField = "name" | "description" | "value" | "valuetext";
+type SeedField =
+  "name" | "url" | "description" | "value" | "valuetext" | "roledescription";
 
-const SEED_FIELDS: readonly SeedField[] = [
-  "name",
-  "description",
-  "value",
-  "valuetext",
+/**
+ * The orders in which a node's text fields are read, node after node in
+ * document order, when looking for a seed phrase spread over several
+ * fields. Each reading is checked on its own, and words adjacent in any of
+ * them count:
+ *
+ * - name, description, value, valuetext: the order used before links had a
+ *   URL, kept so nothing it found is missed now;
+ * - the order `renderSnapshot` prints them, which is what a model reads,
+ *   so a link named with six seed words and a path of six more is found;
+ * - link URLs alone, so the paths of neighbouring links are read together
+ *   whatever their names say.
+ */
+const SEED_READINGS: readonly (readonly SeedField[])[] = [
+  ["name", "description", "value", "valuetext"],
+  ["name", "value", "url", "description", "valuetext", "roledescription"],
+  ["url"],
 ];
 
 interface FieldEntry {
@@ -186,21 +226,33 @@ interface Span {
 }
 
 /**
- * True when a seed phrase is spread over several nodes, for example a wallet
- * that shows one word per cell. Text fields are read in document order.
+ * True when a seed phrase is spread over several nodes or fields, for
+ * example a wallet that shows one word per cell. Text fields are read in
+ * document order, in each of `SEED_READINGS`.
  */
 export function containsSplitSeedPhrase(snapshot: AccessibilityNode): boolean {
-  return findSeedSpans(treeText(snapshot).text).length > 0;
+  return SEED_READINGS.some(
+    (fields) => findSeedSpans(treeText(snapshot, fields).text).length > 0,
+  );
 }
 
 /**
- * Redact a seed phrase whose words sit in separate nodes. Each word is
- * replaced in its own node; list numbers between the words are kept.
+ * Redact a seed phrase whose words sit in separate nodes or fields, in each
+ * reading in turn. Each word is replaced in its own field; list numbers
+ * between the words are kept. A replacement only breaks runs of words, so a
+ * later reading cannot find a phrase an earlier one created.
  */
 function redactSplitSeedPhrases(
   snapshot: AccessibilityNode,
 ): AccessibilityNode {
-  const { text, entries } = treeText(snapshot);
+  return SEED_READINGS.reduce(redactSplitSeedPhrasesIn, snapshot);
+}
+
+function redactSplitSeedPhrasesIn(
+  snapshot: AccessibilityNode,
+  fields: readonly SeedField[],
+): AccessibilityNode {
+  const { text, entries } = treeText(snapshot, fields);
   const spans = findSeedSpans(text);
   if (spans.length === 0) return snapshot;
 
@@ -223,14 +275,17 @@ function redactSplitSeedPhrases(
   return applyFieldEdits(snapshot, edits);
 }
 
-function treeText(snapshot: AccessibilityNode): {
+function treeText(
+  snapshot: AccessibilityNode,
+  fields: readonly SeedField[],
+): {
   text: string;
   entries: FieldEntry[];
 } {
   const entries: FieldEntry[] = [];
   let text = "";
   const visit = (node: AccessibilityNode): void => {
-    for (const field of SEED_FIELDS) {
+    for (const field of fields) {
       const value = node[field];
       if (typeof value !== "string" || value.length === 0) continue;
       if (text.length > 0) text += " ";
@@ -340,6 +395,7 @@ function redactNode(
   const next: {
     role: string;
     name?: string;
+    url?: string;
     value?: string | number;
     description?: string;
     keyshortcuts?: string;
@@ -383,6 +439,7 @@ function redactNode(
   const keyshortcuts = redactOptional(node.keyshortcuts, rules);
   const roledescription = redactOptional(node.roledescription, rules);
   if (name !== undefined) next.name = name;
+  if (node.url !== undefined) next.url = redactUrl(node.url, rules);
   if (description !== undefined) next.description = description;
   if (keyshortcuts !== undefined) next.keyshortcuts = keyshortcuts;
   if (roledescription !== undefined) next.roledescription = roledescription;
@@ -448,7 +505,7 @@ function isSecretField(node: AccessibilityNode): boolean {
   }
   const name = node.name ?? "";
   const description = node.description ?? "";
-  return SECRET_FIELD_NAME.test(name) || SECRET_FIELD_NAME.test(description);
+  return isSecretFieldName(name) || isSecretFieldName(description);
 }
 
 function matchingRoleRule(

@@ -76,6 +76,13 @@ describe("jevy hook pre-edit", () => {
     );
   });
 
+  it("blocks an edit to a file the config imports, and says so", async () => {
+    const text = `import { PASS } from "./thresholds.ts";\n${config("thresholds: { pass: PASS }")}`;
+    expect(
+      await runPreEdit([], fake(edit(`${REPO}/thresholds.ts`), text)),
+    ).toEqual(blocked("thresholds.ts", "it is imported by the Jevy config"));
+  });
+
   it.each(["src/app.ts", "tests/other.spec.ts", "wallet/other.json"])(
     "allows an edit to %s, silently",
     async (path) => {
@@ -537,6 +544,158 @@ describe("jevy hook pre-edit", () => {
   });
 });
 
+const HOOKS = "it keeps the Jevy hooks themselves working";
+
+function hookBlocked(path: string): CliResult {
+  return blocked(path, HOOKS);
+}
+
+/**
+ * Pre-edit with the project at `projectDir`, these config files (absolute
+ * path to text), and `top` as the root of the repository.
+ */
+function inRepo(
+  stdin: string,
+  projectDir: string,
+  configs: Readonly<Record<string, string>>,
+  top: string | null,
+  tracked: readonly string[] = [],
+): { readonly argv: readonly string[]; readonly deps: HookDeps } {
+  const deps = fake(stdin);
+  return {
+    argv: ["--cwd", projectDir],
+    deps: {
+      ...deps,
+      readFile: (path) => Promise.resolve(configs[path] ?? null),
+      git: {
+        ...deps.git,
+        topLevel: () => Promise.resolve(top),
+        trackedConfigs: () => Promise.resolve(tracked),
+      },
+    },
+  };
+}
+
+describe("jevy hook pre-edit and the files that run the hooks", () => {
+  // One Write to any of these turns every hook into "exit 0", and git shows
+  // nothing: node_modules is ignored, and so is .claude/settings.local.json.
+  it.each([
+    "node_modules/.bin/jevy",
+    "node_modules/@jevyjs/cli/dist/bin.js",
+    "node_modules/@jevyjs/cli/package.json",
+    "node_modules/@jevyjs/core/dist/index.js",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+  ])("blocks %s, with no config and with one", async (path) => {
+    for (const text of [null, CONFIG]) {
+      expect(
+        await runPreEdit([], fake(edit(`${REPO}/${path}`, "Write"), text)),
+      ).toEqual(hookBlocked(path));
+    }
+  });
+
+  it.each([".Claude/Settings.json", "node_modules/.BIN/Jevy"])(
+    "blocks %s, whose case differs: a disk that ignores case writes the same file",
+    async (path) => {
+      expect(
+        await runPreEdit([], fake(edit(`${REPO}/${path}`, "Write"))),
+      ).toEqual(hookBlocked(path));
+    },
+  );
+
+  it.each([
+    "node_modules/.bin/vitest",
+    "node_modules/left-pad/index.js",
+    "node_modules/@jevyjsx/a.js",
+    ".claude/commands/fix.md",
+    ".claude/settings.json.bak",
+    "src/.claude/settings.json",
+  ])("allows %s", async (path) => {
+    expect(
+      await runPreEdit([], fake(edit(`${REPO}/${path}`, "Write"))),
+    ).toEqual(ALLOW);
+  });
+
+  it("protects them at the root of the repository too, when the hook runs below it", async () => {
+    const app = `${REPO}/packages/app`;
+    const config = { [`${app}/jevy.config.ts`]: CONFIG };
+    for (const [path, shown] of [
+      [`${REPO}/.claude/settings.json`, `${REPO}/.claude/settings.json`],
+      [`${REPO}/node_modules/.bin/jevy`, `${REPO}/node_modules/.bin/jevy`],
+      [
+        `${REPO}/node_modules/@jevyjs/cli/dist/bin.js`,
+        `${REPO}/node_modules/@jevyjs/cli/dist/bin.js`,
+      ],
+      [`${app}/node_modules/.bin/jevy`, "node_modules/.bin/jevy"],
+      [`${app}/.claude/settings.local.json`, ".claude/settings.local.json"],
+    ] as const) {
+      const { argv, deps } = inRepo(edit(path, "Write"), app, config, REPO);
+      expect(await runPreEdit(argv, deps)).toEqual(hookBlocked(shown));
+    }
+  });
+
+  it("still allows a file outside the repository", async () => {
+    const { argv, deps } = inRepo(
+      edit("/elsewhere/.claude/settings.json", "Write"),
+      REPO,
+      { [`${REPO}/jevy.config.ts`]: CONFIG },
+      REPO,
+    );
+    expect(await runPreEdit(argv, deps)).toEqual(ALLOW);
+  });
+});
+
+describe("jevy hook pre-edit on a path outside the project but inside the repository", () => {
+  it("refuses it when the config is in another directory", async () => {
+    // Started in packages/app/src, which has no config; the agent writes
+    // the config one directory up.
+    const { argv, deps } = inRepo(
+      edit(`${REPO}/packages/app/jevy.config.ts`, "Write"),
+      `${REPO}/packages/app/src`,
+      {},
+      REPO,
+      ["../jevy.config.ts"],
+    );
+    const result = await runPreEdit(argv, deps);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain(
+      "/repo/packages/app/src has no jevy.config.*, but the repository has ../jevy.config.ts",
+    );
+  });
+
+  it("protects a Jevy config anywhere in the repository", async () => {
+    const app = `${REPO}/packages/app`;
+    const config = { [`${app}/jevy.config.ts`]: CONFIG };
+    for (const path of [
+      `${REPO}/packages/web/jevy.config.ts`,
+      `${REPO}/jevy.config.mts`,
+    ]) {
+      const { argv, deps } = inRepo(edit(path), app, config, REPO);
+      expect(await runPreEdit(argv, deps)).toEqual(
+        blocked(path, "it is the Jevy config"),
+      );
+    }
+    const { argv, deps } = inRepo(
+      edit(`${REPO}/packages/web/src/a.ts`),
+      app,
+      config,
+      REPO,
+    );
+    expect(await runPreEdit(argv, deps)).toEqual(ALLOW);
+  });
+
+  it("refuses it when the project's own config cannot be read", async () => {
+    const app = `${REPO}/packages/app`;
+    const { argv, deps } = inRepo(
+      edit(`${REPO}/packages/web/src/a.ts`),
+      app,
+      { [`${app}/jevy.config.ts`]: "export default {{{\n" },
+      REPO,
+    );
+    expect((await runPreEdit(argv, deps)).code).toBe(2);
+  });
+});
+
 describe("jevy hook pre-edit on a real file system", () => {
   let base = "";
   let repo = "";
@@ -699,5 +858,48 @@ describe("jevy hook pre-edit on a real file system", () => {
     expect(
       await check(repo, join(repo, "src", "out", "jevy.config.ts")),
     ).toEqual(blocked("src/out/jevy.config.ts", "it is the Jevy config"));
+  });
+
+  it("blocks the installed jevy however it is named, pnpm's store included", async () => {
+    const project = join(base, "installed");
+    const store = join(
+      project,
+      "node_modules",
+      ".pnpm",
+      "@jevyjs+cli@0.0.1",
+      "node_modules",
+      "@jevyjs",
+      "cli",
+    );
+    mkdirSync(join(store, "dist"), { recursive: true });
+    writeFileSync(join(store, "dist", "bin.js"), "// jevy\n");
+    mkdirSync(join(project, "node_modules", "@jevyjs"), { recursive: true });
+    symlinkSync(store, join(project, "node_modules", "@jevyjs", "cli"), "dir");
+    mkdirSync(join(project, "config"));
+    writeFileSync(join(project, "config", "claude.json"), "{}\n");
+    mkdirSync(join(project, ".claude"));
+    symlinkSync(
+      join(project, "config", "claude.json"),
+      join(project, ".claude", "settings.json"),
+    );
+    const inStore = join(store, "dist", "bin.js");
+    expect(await check(project, inStore)).toEqual(
+      hookBlocked(
+        "node_modules/.pnpm/@jevyjs+cli@0.0.1/node_modules/@jevyjs/cli/dist/bin.js",
+      ),
+    );
+    expect(
+      await check(
+        project,
+        join(project, "node_modules", "@jevyjs", "cli", "dist", "bin.js"),
+      ),
+    ).toEqual(hookBlocked("node_modules/@jevyjs/cli/dist/bin.js"));
+    // The settings file is a link: its target is the file Claude Code reads.
+    expect(
+      await check(project, join(project, "config", "claude.json")),
+    ).toEqual(hookBlocked("config/claude.json"));
+    expect(await check(project, join(project, "config", "other.json"))).toEqual(
+      ALLOW,
+    );
   });
 });

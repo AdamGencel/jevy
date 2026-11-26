@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { CONFIG_FILENAMES } from "../guard/config-source.js";
 
 /**
@@ -6,6 +7,24 @@ import { CONFIG_FILENAMES } from "../guard/config-source.js";
  * only read. They are behind `HookDeps`, so the hook logic is tested without
  * a repository.
  */
+
+/**
+ * What every git call the hooks make, and every guard they start, is given,
+ * so that the repository the agent works in cannot change what git reports.
+ *
+ * `GIT_NO_REPLACE_OBJECTS`: `git replace <start> HEAD` would otherwise make
+ * git show HEAD wherever the session's start commit is asked for, and the
+ * comparison with it would see nothing. `core.fsmonitor=false`: a
+ * repository's config can name a program git runs to learn what changed,
+ * which the agent could make lie or hang.
+ */
+export const GIT_ENV: Readonly<Record<string, string>> = {
+  GIT_NO_REPLACE_OBJECTS: "1",
+};
+export const GIT_CONFIG_ARGS: readonly string[] = [
+  "-c",
+  "core.fsmonitor=false",
+];
 
 interface GitOutput {
   /** The exit code; null when git could not be started or was killed. */
@@ -19,13 +38,14 @@ function git(args: readonly string[], cwd: string): Promise<GitOutput> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      [...args],
+      [...GIT_CONFIG_ARGS, ...args],
       {
         cwd,
         encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
         env: {
           ...process.env,
+          ...GIT_ENV,
           GIT_TERMINAL_PROMPT: "0",
           // These queries must not wait for, or take, the index lock.
           GIT_OPTIONAL_LOCKS: "0",
@@ -63,6 +83,18 @@ export async function gitHead(cwd: string): Promise<string | null> {
   );
   const hash = output.stdout.trim();
   return output.code === 0 && /^[0-9a-f]{40,64}$/.test(hash) ? hash : null;
+}
+
+/**
+ * The top level of the repository around `cwd`, with its symlinks resolved.
+ * Null outside a repository, or with no git. The record of where a session
+ * started is kept under this name, so that the hooks find the same record
+ * from any directory of the repository.
+ */
+export async function gitTopLevel(cwd: string): Promise<string | null> {
+  const output = await git(["rev-parse", "--show-toplevel"], cwd);
+  const top = output.stdout.replace(/\n$/, "");
+  return output.code === 0 && top !== "" ? realpath(top) : null;
 }
 
 /**

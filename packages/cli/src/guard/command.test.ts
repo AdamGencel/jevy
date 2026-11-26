@@ -806,6 +806,96 @@ describe("runGuard settings from the config", () => {
     });
   });
 
+  describe("toSatisfy.blocking, read from the base config", () => {
+    // Changed on purpose: only `@jevyjs/playwright`'s toSatisfy is advisory,
+    // so the test imports Jevy's expect instead of using a global one.
+    const ADVISORY = `import { test, expect } from "@jevyjs/playwright";\ntest("a", async ({ page }) => {\n  await expect(page).toSatisfy("The cart is empty");\n});\n`;
+    const files = (cfg: string | null): Files => ({
+      ...(cfg === null ? {} : { "jevy.config.ts": config(cfg) }),
+    });
+    const kinds = async (deps: GuardDeps): Promise<string[]> =>
+      (await found(["--base", "main"], deps)).map(([, kind]) => kind);
+
+    it("reports a new test checked by toSatisfy alone when nothing makes it blocking", async () => {
+      expect(await kinds(repo({}, { "a.spec.ts": ADVISORY }))).toEqual([
+        "test-added",
+        "only-advisory-assertions",
+      ]);
+      const off = files("toSatisfy: { blocking: false }");
+      expect(await kinds(repo(off, { ...off, "a.spec.ts": ADVISORY }))).toEqual(
+        ["test-added", "only-advisory-assertions"],
+      );
+    });
+
+    it("says nothing more when the base config makes toSatisfy blocking", async () => {
+      const on = files("toSatisfy: { blocking: true }");
+      expect(await kinds(repo(on, { ...on, "a.spec.ts": ADVISORY }))).toEqual([
+        "test-added",
+      ]);
+    });
+
+    it("does not let the change switch blocking on to silence the finding", async () => {
+      const on = files("toSatisfy: { blocking: true }");
+      const off = files("toSatisfy: { blocking: false }");
+      // Only head has a config: what the change wrote widens, never narrows.
+      expect(await kinds(repo({}, { ...on, "a.spec.ts": ADVISORY }))).toContain(
+        "only-advisory-assertions",
+      );
+      // Base says false and head says true: base wins.
+      expect(
+        await kinds(repo(off, { ...on, "a.spec.ts": ADVISORY })),
+      ).toContain("only-advisory-assertions");
+    });
+
+    it("reports the new tests of a change that also switches blocking off", async () => {
+      const on = files("toSatisfy: { blocking: true }");
+      const off = files("toSatisfy: { blocking: false }");
+      const both = ["blocking-switched-off", "only-advisory-assertions"];
+      // Switched off, removed, or shadowed by a config the loader reads first.
+      for (const head of [off, {}]) {
+        expect(
+          await kinds(repo(on, { ...head, "a.spec.ts": ADVISORY })),
+        ).toEqual(expect.arrayContaining(both));
+      }
+      const mts = {
+        "jevy.config.mts": config("toSatisfy: { blocking: true }"),
+      };
+      expect(
+        await kinds(
+          repo(mts, {
+            ...mts,
+            "jevy.config.ts": config(""),
+            "a.spec.ts": ADVISORY,
+          }),
+        ),
+      ).toEqual(expect.arrayContaining(both));
+    });
+
+    it("reads blocking: void 0 in the base config as absent, as core does", async () => {
+      const cfg = files("toSatisfy: { blocking: void 0 }");
+      expect(await kinds(repo(cfg, { ...cfg, "a.spec.ts": ADVISORY }))).toEqual(
+        ["test-added", "only-advisory-assertions"],
+      );
+    });
+
+    it("exits 2 when the base config sets it in a way it cannot read", async () => {
+      const cfg = files("toSatisfy: { blocking: process.env.CI }");
+      const result = await runGuard(["--base", "main"], repo(cfg, cfg));
+      expect(result).toEqual({
+        code: 2,
+        stdout: "",
+        stderr: `jevy guard: cannot read toSatisfy.blocking in the base version of jevy.config.ts: ${LITERAL}\n`,
+      });
+    });
+
+    it("does not need it from a config only head has, which it does not use", async () => {
+      const cfg = files("toSatisfy: { blocking: process.env.CI }");
+      expect(
+        await kinds(repo({}, { ...cfg, "a.spec.ts": ADVISORY })),
+      ).toContain("only-advisory-assertions");
+    });
+  });
+
   it("exits 2 when it cannot find the config object at all", async () => {
     const cfg = { "jevy.config.ts": "export default makeConfig();\n" };
     const result = await runGuard(

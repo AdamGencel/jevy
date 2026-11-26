@@ -18,6 +18,7 @@ import {
   type AssertionParts,
   type AssertionScope,
   type BodyEvidence,
+  type BodyReading,
   type ConstantOutcome,
   type FileFacts,
   type FixedResult,
@@ -60,6 +61,17 @@ export interface ParsedAssertion {
   readonly result: FixedResult | null;
   /** The variable the value under test is read from, for the mock rule. */
   readonly subjectRoot: string | null;
+  /**
+   * Set when the assertion is in a function the test defines and never
+   * calls, so it never runs. Read by the weak-test rules only.
+   */
+  readonly unreached?: true;
+  /**
+   * Set when the assertion only reports while `toSatisfy` does not block:
+   * `@jevyjs/playwright`'s `toSatisfy`, or a `toPass` block whose only check
+   * is one. Read by the weak-test rules only.
+   */
+  readonly advisory?: true;
   readonly line: number;
 }
 
@@ -129,6 +141,8 @@ interface TestBuilder {
   readonly evidence: BodyEvidence | null;
   /** The names of the test function that an assertion on constants can use. */
   readonly names: AssertionScope;
+  /** The weak-test reading of the test function, or null for `it.todo`. */
+  readonly reading: BodyReading | null;
 }
 
 interface Context {
@@ -414,14 +428,22 @@ function readChainParts(call: ts.CallExpression): AssertionChain | null {
   };
 }
 
+/** True when `node` sits in one of `functions`. */
+function isWithin(node: ts.Node, functions: readonly ts.Node[]): boolean {
+  return functions.some((fn) => node.pos >= fn.pos && node.end <= fn.end);
+}
+
 /**
  * Read one assertion into the model. `names` are those of the test function
- * it stands in, which decide whether `expect(a).toBe(5)` is on constants.
+ * it stands in, which decide whether `expect(a).toBe(5)` is on constants;
+ * `reading` is that function's weak-test reading, which knows what its
+ * callers hand a function the test defines, and which of those never run.
  */
 function readAssertion(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
   names: AssertionScope,
+  reading: BodyReading | null = null,
 ): ParsedAssertion | null {
   const parts = readChainParts(call);
   if (parts === null) {
@@ -429,7 +451,14 @@ function readAssertion(
   }
   const { matcher, soft, negated, modifiers, subject: subjectNode } = parts;
   const first = call.arguments[0];
-  const constant = constantOutcome(parts, names);
+  const constant =
+    reading?.overrides.get(call) ?? constantOutcome(parts, names);
+  const unreached =
+    reading !== null && isWithin(call, reading.unread)
+      ? { unreached: true as const }
+      : {};
+  const advisory =
+    reading?.advisory.has(call) === true ? { advisory: true as const } : {};
   const base = {
     matcher,
     soft,
@@ -440,6 +469,8 @@ function readAssertion(
     constant: constant?.outcome ?? null,
     result: constant?.result ?? null,
     subjectRoot: subjectRoot(subjectNode),
+    ...unreached,
+    ...advisory,
     line: lineOf(call, sourceFile),
   };
   if (matcher === "toSatisfy" && first !== undefined) {
@@ -556,6 +587,7 @@ function walk(
           assertions: [],
           evidence: reading?.evidence ?? null,
           names: reading?.scope ?? NO_SCOPE,
+          reading,
         };
         tests.push(test);
         if (info.fn !== undefined) {
@@ -571,6 +603,7 @@ function walk(
         node,
         sourceFile,
         context.test?.names ?? NO_SCOPE,
+        context.test?.reading ?? null,
       );
       if (assertion !== null) {
         (context.test?.assertions ?? loose).push(assertion);
@@ -592,7 +625,7 @@ export function parseTestFile(text: string, path: string): TestFileParse {
     return parsed;
   }
   const { sourceFile } = parsed;
-  const facts = readFileFacts(sourceFile, readChainParts);
+  const facts = readFileFacts(sourceFile, readChainParts, path);
   const { tests, loose } = walk(sourceFile, sourceFile, facts);
   return {
     ok: true,

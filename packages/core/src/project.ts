@@ -5,12 +5,13 @@ import {
   normaliseText,
 } from "./normalise.js";
 import { ConfigError, RedactionError, SnapshotError } from "./errors.js";
-import { isRecord } from "./guards.js";
+import { collapseWhitespace, isRecord } from "./guards.js";
 import { resolveNormalise } from "./snapshot.js";
 import {
   containsSplitSeedPhrase,
   redactSnapshot,
   redactText,
+  redactUrl,
 } from "./redact.js";
 import type { RedactRule } from "./redact.js";
 import type {
@@ -37,14 +38,34 @@ export function projectSnapshot(
   const rules = options?.redact ?? [];
   const redacted = redactSnapshot(snapshot, rules);
   const normalised = normaliseSnapshot(redacted, options?.normalise);
-  assertTreeRedacted(normalised, rules);
-  if (containsSplitSeedPhrase(normalised)) {
-    throw new RedactionError(
-      "Redaction failed closed: a seed phrase spread over several nodes was still present on the normalised snapshot. It was not hashed or returned.",
-    );
-  }
+  assertSnapshotClean(normalised, rules);
   if (options?.region === undefined) return normalised;
   return sliceRegion(normalised, options.region, options.normalise);
+}
+
+/**
+ * Throw `RedactionError` unless redaction would leave `tree` as it is: every
+ * text field and URL is clean under the built-in patterns and `rules`, and
+ * no seed phrase is spread over its nodes. `projectSnapshot` checks the
+ * normalised tree with it, and pruning checks its result again, because
+ * removing a node can bring two halves of a phrase together and cutting a
+ * field to a prefix can leave text that a pattern matches.
+ *
+ * With `cut: true`, a field may be a prefix of a clean one, so it can end
+ * in a space or a bare `https:/` that redaction would tidy. Only what the
+ * text patterns, `rules` and the seed-phrase check find counts then.
+ */
+export function assertSnapshotClean(
+  tree: AccessibilityNode,
+  rules: readonly RedactRule[],
+  options?: { readonly cut?: boolean },
+): void {
+  assertTreeRedacted(tree, rules, options?.cut ?? false);
+  if (containsSplitSeedPhrase(tree)) {
+    throw new RedactionError(
+      "Redaction failed closed: a seed phrase spread over several nodes was still present on the snapshot. It was not hashed or returned.",
+    );
+  }
 }
 
 /**
@@ -56,12 +77,13 @@ export const SNAPSHOT_HASH_VERSION = 2;
  * Version of the built-in redaction and normalisation rules. A built-in
  * change can change the tree that is hashed without changing the code that
  * hashes it, so the rules carry their own version. Version 1 was the rule set
- * before the seed-phrase and key-pattern changes of November 2026.
+ * before the seed-phrase and key-pattern changes of November 2026. Version 2
+ * was the rule set before a link's `url` joined the tree (step 3).
  *
  * Bump this whenever a built-in rule change alters any snapshot's hash; the
  * golden-hash test fails until you do.
  */
-export const SNAPSHOT_RULES_VERSION = 2;
+export const SNAPSHOT_RULES_VERSION = 3;
 
 /**
  * The string that is hashed. Key order is fixed by construction, and
@@ -209,16 +231,21 @@ function findRegion(
 function assertTreeRedacted(
   node: AccessibilityNode,
   rules: readonly RedactRule[],
+  cut: boolean,
 ): void {
-  for (const value of stringFields(node)) {
-    if (redactText(value, rules) !== value) {
-      throw new RedactionError(
-        "Redaction failed closed: secret or personal data was still present on the normalised snapshot. It was not hashed or returned.",
-      );
-    }
+  const unchanged = (value: string): boolean =>
+    redactText(value, rules) === (cut ? collapseWhitespace(value) : value);
+  const clean =
+    stringFields(node).every(unchanged) &&
+    (node.url === undefined ||
+      (cut ? unchanged(node.url) : redactUrl(node.url, rules) === node.url));
+  if (!clean) {
+    throw new RedactionError(
+      "Redaction failed closed: secret or personal data was still present on the snapshot. It was not hashed or returned.",
+    );
   }
   for (const child of node.children ?? []) {
-    assertTreeRedacted(child, rules);
+    assertTreeRedacted(child, rules, cut);
   }
 }
 

@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   REDACTED,
+  isSecretFieldName,
   redactSnapshot,
   redactText,
   redactWallet,
 } from "./redact.js";
 import { hashSnapshot } from "./hash.js";
-import { normaliseSnapshot } from "./normalise.js";
+import { canonicalSnapshotJson, normaliseSnapshot } from "./normalise.js";
 import { prepareDecisionState } from "./prepare.js";
+import { projectSnapshot } from "./project.js";
+import { renderSnapshot } from "./render.js";
 import type { AccessibilityNode } from "./snapshot.js";
 
 const ADDRESS = "0x52908400098527886E0F7030069857D2E4169EE7";
@@ -244,6 +247,181 @@ describe("redaction", () => {
       { role: "textbox", name: /backup code/i },
     ]);
     expect(redacted.name).toBe("Backup code");
+    expect(redacted.value).toBe(REDACTED);
+  });
+});
+
+describe("redacting a link's URL", () => {
+  it("drops the query string, the fragment and credentials before the text rules", () => {
+    const redacted = redactSnapshot({
+      role: "link",
+      name: "Reset",
+      url: "https://ada:hunter2@shop.example/reset/ada@example.com?token=abc123#done",
+    });
+    expect(redacted.url).toBe(`https://shop.example/reset/${REDACTED}`);
+    const encoded = JSON.stringify(redacted);
+    expect(encoded).not.toContain("hunter2");
+    expect(encoded).not.toContain("abc123");
+    expect(encoded).not.toContain("ada@example.com");
+  });
+
+  it("reduces script and data URLs to their scheme", () => {
+    const script = redactSnapshot({
+      role: "link",
+      name: "Run",
+      url: "javascript:fetch('/steal?k=' + 'sk_live_abc123XYZ')",
+    });
+    expect(script.url).toBe("javascript:");
+    const data = redactSnapshot({
+      role: "link",
+      name: "Download",
+      url: "data:text/plain,Signed in as ada@example.com",
+    });
+    expect(data.url).toBe("data:");
+  });
+
+  it("applies the project's rules to the URL", () => {
+    const redacted = redactSnapshot(
+      { role: "link", name: "Account", url: "/accounts/acct-4242" },
+      [/acct-\d+/],
+    );
+    expect(redacted.url).toBe(`/accounts/${REDACTED}`);
+  });
+
+  it("drops credentials however the authority is introduced", () => {
+    const inputs = [
+      "https:///admin:hunter2@intranet/x",
+      "https://\\admin:hunter2@10.0.0.1/x",
+      "https:////admin:hunter2@intranet/x",
+      "///admin:hunter2@intranet/x",
+      "\\\\admin:hunter2@10.0.0.1/x",
+      "/\t/admin:hunter2@10.0.0.1/x",
+      "/\n/admin:hunter2@10.0.0.1/x",
+      " //admin:hunter2@10.0.0.1/x",
+      "\u0001//admin:hunter2@10.0.0.1/x",
+      "https:\\\\admin:hunter2@good.example/x",
+      "https:/\\admin:hunter2@good.example/x",
+      "https:admin:hunter2@good.example/x",
+      "ht\ttps://admin:hunter2@good.example/x",
+      "ftp:///admin:hunter2@files.example/x",
+      "https://admin:pa?hunter2@host.example/",
+      "https://admin:pa#hunter2@host.example/",
+      "https://admin:pa/hunter2@host.example/",
+      "https://admin:1234?hunter2@host.example/",
+      "javascript://%0Afetch('/x',{body:'hunter2'})",
+      "data://text/html,<b>hunter2</b>",
+    ];
+    for (const url of inputs) {
+      const tree = projectSnapshot({ role: "link", name: "Go", url });
+      expect(canonicalSnapshotJson(tree), JSON.stringify(url)).not.toContain(
+        "hunter2",
+      );
+      expect(renderSnapshot(tree), JSON.stringify(url)).not.toContain(
+        "hunter2",
+      );
+    }
+  });
+
+  it("drops a session id in a matrix parameter or a name=value segment", () => {
+    for (const url of [
+      "https://shop.example/app;jsessionid=A1B2C3D4E5F6G7H8",
+      "https://shop.example/api/key=A1B2C3D4E5F6G7H8;",
+    ]) {
+      const rendered = renderSnapshot(
+        projectSnapshot({ role: "link", name: "Go", url }),
+      );
+      expect(rendered).not.toContain("A1B2C3D4E5F6G7H8");
+    }
+  });
+
+  it("redacts a seed phrase split between a link's name and its URL", () => {
+    const words = SEED.split(" ");
+    const tree = projectSnapshot({
+      role: "main",
+      children: [
+        {
+          role: "link",
+          name: words.slice(0, 6).join(" "),
+          url: `/${words.slice(6).join("/")}`,
+        },
+      ],
+    });
+    const rendered = renderSnapshot(tree);
+    for (const word of words) expect(rendered).not.toContain(word);
+  });
+
+  it("redacts a seed phrase split between two links' URLs", () => {
+    const words = SEED.split(" ");
+    const tree = projectSnapshot({
+      role: "main",
+      children: [
+        { role: "link", name: "a", url: `/${words.slice(0, 6).join("/")}` },
+        { role: "link", name: "b", url: `/${words.slice(6).join("/")}` },
+      ],
+    });
+    const rendered = renderSnapshot(tree);
+    for (const word of words) expect(rendered).not.toContain(word);
+  });
+
+  it("redacts a seed phrase split between a name and a value, in the order they render", () => {
+    const words = SEED.split(" ");
+    const tree = projectSnapshot({
+      role: "main",
+      children: [
+        {
+          role: "combobox",
+          name: words.slice(0, 6).join(" "),
+          url: "/zebra",
+          value: words.slice(6).join(" "),
+        },
+      ],
+    });
+    const rendered = renderSnapshot(tree);
+    for (const word of words) expect(rendered).not.toContain(word);
+  });
+
+  it("redacts a URL on a nested node", () => {
+    const redacted = redactSnapshot({
+      role: "main",
+      children: [
+        { role: "link", name: "Profile", url: "/u/bob@example.org?x=1" },
+      ],
+    });
+    expect(redacted.children?.[0]?.url).toBe(`/u/${REDACTED}`);
+  });
+});
+
+describe("isSecretFieldName", () => {
+  it("names the labels that mean a secret field", () => {
+    for (const name of [
+      "Password",
+      "Confirm passcode",
+      "Passphrase",
+      "Client secret",
+      "API key",
+      "api_key",
+      "Mnemonic",
+      "Seed phrase",
+      "Recovery words",
+      "privateKey",
+      "Private-key",
+    ]) {
+      expect(isSecretFieldName(name)).toBe(true);
+    }
+  });
+
+  it("leaves ordinary labels alone", () => {
+    for (const name of ["Username", "Email", "Token address", "Public key"]) {
+      expect(isSecretFieldName(name)).toBe(false);
+    }
+  });
+
+  it("is the rule redaction uses for a textbox", () => {
+    const redacted = redactSnapshot({
+      role: "textbox",
+      name: "Recovery phrase",
+      value: "anything",
+    });
     expect(redacted.value).toBe(REDACTED);
   });
 });

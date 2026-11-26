@@ -14,7 +14,9 @@ import { UsageError } from "./errors.js";
  * Parentheses are literal text (`app/(marketing)/**`). Not supported, and
  * rejected: negation (`!x`), nested braces, character classes (`[abc]`),
  * extended glob groups (`@(a|b)`, `+(a)`, `?(a)`, `*(a)`, `!(a)`), `|`,
- * backslashes, absolute paths, `..` segments and whitespace at either end.
+ * backslashes, absolute paths, `..` segments, and whitespace at either end
+ * of the glob, of a path segment or of a brace alternative (a space inside
+ * a name, `my docs/plan.md`, is allowed).
  *
  * `@jevyjs/core`'s loader restates this rule as `assertGlob` in its
  * `config.ts`. The CLI must not depend on core and core cannot import the
@@ -46,6 +48,15 @@ type Expanded =
   | { readonly ok: true; readonly alternatives: readonly string[] }
   | { readonly ok: false; readonly reason: string };
 
+/**
+ * Whether `text` starts or ends with whitespace. A name with a space inside
+ * (`my docs`) is a real name; `{a, b}` and `tests /x` are typing slips that
+ * read as names no file has, so the glob would match nothing.
+ */
+function hasEdgeSpace(text: string): boolean {
+  return text !== text.trim();
+}
+
 /** Expand `{a,b}` groups into every plain pattern they stand for. */
 function expandBraces(glob: string): Expanded {
   let alternatives: readonly string[] = [""];
@@ -65,6 +76,13 @@ function expandBraces(glob: string): Expanded {
     }
     const head = rest.slice(0, open);
     const options = body.split(",");
+    if (options.some(hasEdgeSpace)) {
+      return {
+        ok: false,
+        reason:
+          "whitespace at the start or end of a brace alternative is not allowed",
+      };
+    }
     if (alternatives.length * options.length > MAX_ALTERNATIVES) {
       return {
         ok: false,
@@ -113,6 +131,13 @@ function compilePattern(text: string): Pattern {
   for (const part of parts) {
     if (part === "..") {
       return { ok: false, reason: 'a ".." segment is not allowed' };
+    }
+    if (hasEdgeSpace(part)) {
+      return {
+        ok: false,
+        reason:
+          "whitespace at the start or end of a path segment is not allowed",
+      };
     }
     if (part === "**") {
       segments.push({ kind: "globstar" });
@@ -297,6 +322,52 @@ function patternMatches(
 }
 
 /**
+ * Whether `pattern` could match `path` or something below it: some position
+ * is still reachable after every segment of `path` is read.
+ */
+function patternReaches(
+  pattern: readonly Segment[],
+  path: readonly (readonly string[])[],
+): boolean {
+  let states = skipGlobstars(new Set([0]), pattern);
+  for (const name of path) {
+    if (states.has(pattern.length)) {
+      return true;
+    }
+    const next = new Set<number>();
+    for (const index of states) {
+      const segment = pattern[index];
+      if (segment?.kind === "globstar") {
+        next.add(index);
+      } else if (segment !== undefined && nameMatches(segment.chars, name)) {
+        next.add(index + 1);
+      }
+    }
+    states = skipGlobstars(next, pattern);
+  }
+  return states.size > 0;
+}
+
+/**
+ * True when `glob` matches the directory `path`, a directory that contains
+ * it, or could match a file inside it: `tests/**` and `**\/*.spec.ts` reach
+ * into `tests/fixtures/app`, `docs/**` does not. For a directory whose
+ * contents the guard cannot see, such as a submodule. False for a glob
+ * `checkGlob` rejects and for an empty path.
+ */
+export function reachesInto(path: string, glob: string): boolean {
+  const names = namesOf(path);
+  if (names.length === 0) {
+    return false;
+  }
+  const compiled = compile(glob);
+  return (
+    compiled.ok &&
+    compiled.patterns.some((pattern) => patternReaches(pattern, names))
+  );
+}
+
+/**
  * True when `glob` matches `path`, or matches a directory that contains it.
  *
  * Globs are anchored at the repository root and case-sensitive. `*` and `?`
@@ -348,7 +419,8 @@ export function firstMatch(
 
 /**
  * Throws UsageError for a glob this matcher cannot honour: an empty glob,
- * whitespace at either end, negation, an absolute path or drive letter, a
+ * whitespace at either end of the glob, a segment or a brace alternative,
+ * negation, an absolute path or drive letter, a
  * `..` segment, a backslash, a character class, an extended glob group, a
  * `|`, nested or unbalanced braces, more than 256 alternatives, `**` that is
  * not a whole segment, or a glob that names no path (`.`). Call it where

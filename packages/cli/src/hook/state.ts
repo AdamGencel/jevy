@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { constants, type Stats } from "node:fs";
+import { open, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
+import { GuardError } from "../guard/errors.js";
 
 /**
  * What the hooks remember about one session: how many times the stop hook
@@ -98,15 +100,21 @@ export function statePath(
 }
 
 /**
- * The file that holds the commit one session of one project started from.
- * Named like the count's file and for the same reason.
+ * The file that holds the commit one session started from in one
+ * repository. Named like the count's file and for the same reason.
+ *
+ * `repoRoot` is the repository's top level with its symlinks resolved, not
+ * the project directory: `session-start` runs where the settings put it
+ * (the project root), and the stop hook may be told to run in the
+ * directory of a config below it. Keyed by the directory, the stop hook
+ * found no record there and skipped the comparison it is for.
  */
 export function startPath(
   dir: string,
-  projectDir: string,
+  repoRoot: string,
   sessionId: string,
 ): string {
-  const name = sha256(JSON.stringify([projectDir, sessionId])).slice(0, 32);
+  const name = sha256(JSON.stringify([repoRoot, sessionId])).slice(0, 32);
   return join(dir, `jevy-hook-${name}-start.json`);
 }
 
@@ -204,25 +212,92 @@ function hasCode(error: unknown, code: string): boolean {
   );
 }
 
-/** State files on disk in `dir`, readable and writable by their owner only. */
+function kindOf(stats: Stats): string {
+  if (stats.isDirectory()) {
+    return "a directory";
+  }
+  if (stats.isSymbolicLink()) {
+    return "a symlink";
+  }
+  if (stats.isFIFO()) {
+    return "a FIFO";
+  }
+  return stats.isSocket() ? "a socket" : "a device";
+}
+
+/**
+ * The text of the regular file at `path`, or null when nothing is there.
+ *
+ * The agent can put anything in the temp directory where these files live.
+ * A plain read of a FIFO waits for a writer in one of Node's worker threads,
+ * and `process.exit` waits for that thread: the hook would write its answer
+ * and then not end until Claude Code cancels it, which lets the agent stop.
+ * So the file is opened so that nothing can make the open wait (O_NONBLOCK)
+ * or follow a link (O_NOFOLLOW), and the opened file must be a regular one
+ * before a byte is read. Both flags are 0 on Windows.
+ */
+async function readRegular(path: string): Promise<string | null> {
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      path,
+      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+    );
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) {
+      return null;
+    }
+    if (hasCode(error, "ELOOP") || hasCode(error, "EMLINK")) {
+      throw new GuardError(`${path} is a symlink, not a regular file`);
+    }
+    throw error;
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new GuardError(`${path} is ${kindOf(stats)}, not a regular file`);
+    }
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Write `text` to a new file beside `path`, then rename it over `path`.
+ *
+ * The new file is created with O_EXCL under a random name, so it is a
+ * regular file this call made: nothing the agent left there can make the
+ * write wait or go elsewhere. The rename replaces whatever is at `path` (a
+ * FIFO, a symlink) without opening it, and readers see the old text or the
+ * new, never half of it.
+ */
+async function writeReplacing(path: string, text: string): Promise<void> {
+  const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, text, { mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+}
+
+/**
+ * State files on disk in `dir`, readable and writable by their owner only.
+ * No operation opens what it finds at a path in a way that can wait.
+ */
 export function realStateFiles(dir: string): StateFiles {
   return {
     dir,
-    read: async (path) => {
-      try {
-        return await readFile(path, "utf8");
-      } catch (error) {
-        if (hasCode(error, "ENOENT")) {
-          return null;
-        }
-        throw error;
-      }
-    },
-    write: (path, text) => writeFile(path, text, { mode: 0o600 }),
+    read: readRegular,
+    write: writeReplacing,
     create: async (path, text) => {
       try {
-        // "wx" fails when the path exists, in one step: two hooks started
-        // together cannot both think they were first.
+        // "wx" (O_CREAT | O_EXCL) fails when the path exists, whatever is
+        // there, in one step and without opening it: two hooks started
+        // together cannot both think they were first, and a FIFO cannot
+        // make it wait.
         await writeFile(path, text, { mode: 0o600, flag: "wx" });
         return true;
       } catch (error) {
@@ -287,7 +362,10 @@ export async function clearState(
 }
 
 export type StartRecord =
-  /** The session-start hook did not run for this session, or its file is gone. */
+  /**
+   * No file: the session-start hook did not run for this session, or the
+   * file has been deleted. The two cannot be told apart.
+   */
   | { readonly kind: "none" }
   | { readonly kind: "commit"; readonly commit: string }
   /** A record is there and cannot be used; `why` is for the person. */
@@ -295,9 +373,15 @@ export type StartRecord =
 
 /**
  * The commit this session started from. Never throws. A record that cannot
- * be read, or reads as something else, is "unusable" and never "none": the
- * stop hook treats "none" as "compare as if the hook were not wired", and a
- * damaged file must not be a way to get there.
+ * be read, is not a regular file, or reads as something else, is
+ * "unusable" and never "none": the stop hook treats "none" as "compare as if
+ * the hook were not wired", and a damaged file must not be a way to get
+ * there.
+ *
+ * Only a missing file is "none", and that includes a file the agent has
+ * deleted. Nothing outside the temp directory knows the record was ever
+ * written, so a deletion reads like a session that started before the hook
+ * was wired. That is a known limit: the guard in CI still compares commits.
  */
 export async function loadStart(
   files: StateFiles,

@@ -12,6 +12,8 @@ const SILENT: CliResult = { code: 0, stdout: "", stderr: "" };
 
 interface World {
   head: string | null;
+  /** The repository's top level, by directory; a directory not listed is its own. */
+  readonly tops: Map<string, string | null>;
   readonly files: Map<string, string>;
   readonly deps: HookDeps;
 }
@@ -31,6 +33,7 @@ function world(stdin: string): World {
     Promise.reject(new Error("session-start must not use this"));
   const out: World = {
     head: COMMIT,
+    tops: new Map(),
     files,
     deps: {
       cwd: REPO,
@@ -43,6 +46,10 @@ function world(stdin: string): World {
       refExists: unused,
       git: {
         head: () => Promise.resolve(out.head),
+        topLevel: (cwd) =>
+          Promise.resolve(
+            out.tops.has(cwd) ? (out.tops.get(cwd) ?? null) : cwd,
+          ),
         originHead: unused,
         readAt: unused,
         trackedConfigs: unused,
@@ -107,6 +114,24 @@ describe("jevy hook session-start", () => {
         startPath(STATE_DIR, "/other", "s2"),
       ].sort(),
     );
+  });
+
+  it("keys the record by the repository's top level, so every --cwd in it shares one", async () => {
+    // The printed snippet runs this hook at the project root; the stop hook
+    // may be told to run in the directory of a config below it.
+    const w = world(input("startup"));
+    w.tops.set(`${REPO}/packages/app`, REPO);
+    expect(await runSessionStart(["--cwd", "packages/app"], w.deps)).toEqual(
+      SILENT,
+    );
+    expect([...w.files]).toEqual([[PATH, serialiseStart(COMMIT)]]);
+  });
+
+  it("records nothing when git cannot name the repository's top level", async () => {
+    const w = world(input("startup"));
+    w.tops.set(REPO, null);
+    expect(await runSessionStart([], w.deps)).toEqual(SILENT);
+    expect(w.files.size).toBe(0);
   });
 
   it("records nothing on an unborn HEAD or outside a repository", async () => {

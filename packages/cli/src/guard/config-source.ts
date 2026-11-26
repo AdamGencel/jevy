@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import ts from "typescript";
 import { parseSource, propertyName, stringValue, unwrap } from "./source.js";
 
@@ -5,7 +6,7 @@ import { parseSource, propertyName, stringValue, unwrap } from "./source.js";
  * Reads a few settings out of `jevy.config.*` as source text.
  *
  * The guard and the hooks need the cache directory, the test globs, the
- * protected paths and the check commands. Loading the config would run the
+ * protected paths, the check commands and whether `toSatisfy` blocks. Loading the config would run the
  * repository's code, which the guard never does, so only values written as
  * literals are read. Everything else is reported in `unreadable` so that a
  * caller deciding what an agent may touch can refuse instead of assuming the
@@ -42,10 +43,28 @@ export interface ConfigSettings {
   /** `ci.mainBranch`, when it is a string literal. */
   readonly mainBranch: string | null;
   /**
+   * `toSatisfy.blocking`, when it is `true` or `false` written as such.
+   * Absent when the key is not written, which is core's default, `false`,
+   * and when it cannot be read, which `unreadable` then lists.
+   */
+  readonly toSatisfyBlocking?: boolean;
+  /**
+   * The files of the repository the config imports or requires, each
+   * specifier resolved against the config's directory: relative to the
+   * repository root when the config's path given was. A value the config
+   * reads from one of them is not in the config's text, so changing that
+   * file changes the config; the caller protects these files. Type-only
+   * imports are left out, and so are packages. Absent when there are none.
+   */
+  readonly imports?: readonly string[];
+  /**
    * Dotted paths of the keys above that are present but could not be read as
    * literals (a variable, a spread, a call). ["*"] when the file does not
    * parse, or its shape does not prove which object the loader receives and
-   * that it arrives as written. A caller that must fail closed checks this.
+   * that it arrives as written. "imports" when the config imports a file by
+   * a name that is neither relative nor a package (`@/x`, `#x`, `/x`), so
+   * the file cannot be placed and protected. A caller that must fail closed
+   * checks this.
    */
   readonly unreadable: readonly string[];
 }
@@ -100,6 +119,14 @@ interface Names {
    * the exported object without writing its name.
    */
   readonly reachesUnnamed: boolean;
+  /**
+   * The file reaches what the loader holds or what every object inherits:
+   * see `reachesLoaderOf`. Code that does can change the config object
+   * after it is built without naming it.
+   */
+  readonly reachesLoader: boolean;
+  /** Module specifiers of the runtime imports and literal `require`s. */
+  readonly specifiers: readonly string[];
   /** Initialisers of the top-level `const`s. */
   readonly consts: ReadonlyMap<string, ts.Expression>;
 }
@@ -208,10 +235,160 @@ function constInitialisers(
   return out;
 }
 
+/**
+ * Names whose mere mention lets code reach the config object, or what it
+ * inherits, without naming it: the global object, reflection, the code
+ * constructors and the CommonJS module of the file itself.
+ */
+const LOADER_NAMES: ReadonlySet<string> = new Set([
+  "globalThis",
+  "global",
+  "__filename",
+  "Reflect",
+  "eval",
+  "Function",
+]);
+
+/**
+ * Member names that reach a prototype, redefine a property or reach a
+ * loaded module: `Object.prototype.cache = ...` gives every object a
+ * `cache`, and core's loader reads inherited keys like its own.
+ */
+const LOADER_MEMBERS: ReadonlySet<string> = new Set([
+  "prototype",
+  "__proto__",
+  "constructor",
+  "defineProperty",
+  "defineProperties",
+  "setPrototypeOf",
+  // Reading a prototype is enough to write to it: `Object.assign(
+  // Object.getPrototypeOf({}), { cache: … })` gives every object, the
+  // config included, a key the reader would call absent.
+  "getPrototypeOf",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "mainModule",
+]);
+
+function isRequireCall(node: ts.Node): node is ts.CallExpression {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "require"
+  );
+}
+
+/**
+ * Whether `expression` is a number written as a literal: `1`, `0x1`, `1n`,
+ * `-1`, `+1`. A number converts to a key such as "1" or "-1", never to a
+ * name in `LOADER_MEMBERS` or to "cache".
+ */
+function isNumericLiteral(expression: ts.Expression): boolean {
+  const node = unwrap(expression);
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    (node.operator === ts.SyntaxKind.MinusToken ||
+      node.operator === ts.SyntaxKind.PlusToken)
+  ) {
+    const operand = unwrap(node.operand);
+    return ts.isNumericLiteral(operand) || ts.isBigIntLiteral(operand);
+  }
+  return ts.isNumericLiteral(node) || ts.isBigIntLiteral(node);
+}
+
+/**
+ * The member name an access reads, when it is written out; null for `x[k]`.
+ * A numeric index gives its literal text: only its being no loader member
+ * matters here.
+ */
+function memberName(
+  node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | null {
+  if (ts.isPropertyAccessExpression(node)) {
+    return node.name.text;
+  }
+  return isNumericLiteral(node.argumentExpression)
+    ? node.argumentExpression.getText()
+    : stringValue(node.argumentExpression);
+}
+
+/**
+ * Whether `node` on its own lets the file reach the config object without
+ * naming it: `import.meta`, `require.cache`, a `require` of a computed path,
+ * a member in `LOADER_MEMBERS`, or `x[k]` with a key that is not a literal
+ * (which could be any of those).
+ *
+ * A numeric index (`m[1]`, `arr[-1]`) is not a reach: it cannot name a
+ * loader member, and an adapter written in the config reads regex matches
+ * and arrays that way. It does not let code reach the config object either,
+ * because `x` is still written out: when `x` names the config object, or a
+ * second name for it, that name is written once more than `follow` allows,
+ * and the config is unreadable for that reason.
+ */
+function reachesLoaderAt(node: ts.Node): boolean {
+  if (ts.isMetaProperty(node)) {
+    return node.keywordToken === ts.SyntaxKind.ImportKeyword;
+  }
+  if (isRequireCall(node)) {
+    const [argument] = node.arguments;
+    return (
+      node.arguments.length !== 1 ||
+      argument === undefined ||
+      stringValue(argument) === null
+    );
+  }
+  if (
+    !ts.isPropertyAccessExpression(node) &&
+    !ts.isElementAccessExpression(node)
+  ) {
+    return false;
+  }
+  const name = memberName(node);
+  if (name === null) {
+    return true;
+  }
+  return (
+    LOADER_MEMBERS.has(name) ||
+    (name === "cache" &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "require")
+  );
+}
+
+/** The specifier of a runtime import, export-from or `import x = require()`. */
+function staticSpecifier(node: ts.Node): string | null {
+  if (ts.isImportDeclaration(node)) {
+    return node.importClause?.phaseModifier === ts.SyntaxKind.TypeKeyword
+      ? null
+      : stringValue(node.moduleSpecifier);
+  }
+  if (ts.isExportDeclaration(node)) {
+    return node.isTypeOnly || node.moduleSpecifier === undefined
+      ? null
+      : stringValue(node.moduleSpecifier);
+  }
+  if (
+    ts.isImportEqualsDeclaration(node) &&
+    !node.isTypeOnly &&
+    ts.isExternalModuleReference(node.moduleReference)
+  ) {
+    return stringValue(node.moduleReference.expression);
+  }
+  if (isRequireCall(node)) {
+    const [argument] = node.arguments;
+    return argument === undefined ? null : stringValue(argument);
+  }
+  return null;
+}
+
 function namesOf(sourceFile: ts.SourceFile): Names {
   const written = new Map<string, number>();
   const declared = new Set<string>();
   const dynamicImports: ts.Node[] = [];
+  const specifiers: string[] = [];
+  const loaderReaches: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isIdentifier(node)) {
       if (!isPropertyKey(node)) {
@@ -228,6 +405,13 @@ function namesOf(sourceFile: ts.SourceFile): Names {
     ) {
       dynamicImports.push(node);
     }
+    if (reachesLoaderAt(node)) {
+      loaderReaches.push(node);
+    }
+    const specifier = staticSpecifier(node);
+    if (specifier !== null) {
+      specifiers.push(specifier);
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
@@ -236,6 +420,10 @@ function namesOf(sourceFile: ts.SourceFile): Names {
     declared,
     imports: importsOf(sourceFile),
     reachesUnnamed: dynamicImports.length > 0 || written.has("eval"),
+    reachesLoader:
+      loaderReaches.length > 0 ||
+      [...LOADER_NAMES].some((name) => written.has(name)),
+    specifiers,
     consts: constInitialisers(sourceFile),
   };
 }
@@ -441,7 +629,11 @@ function count(names: Names, name: string): number {
  *   `defineConfig(...)` of one (see `isTrustedDefineConfig`), or a top-level
  *   `const` holding either, followed as `follow` allows.
  * - Nothing declares `undefined`: `{ dir: undefined }` is read as absent.
- * - Neither `eval` nor a dynamic `import()` appears.
+ * - Neither `eval` nor a dynamic `import()` appears, and nothing reaches
+ *   the loader or what objects inherit (`globalThis`, `require.cache`,
+ *   `import.meta`, `Object.prototype`, `Reflect`; see `reachesLoaderAt`).
+ * - The file does not import itself (`selfImport`): through that import
+ *   later code can reach the object the loader received.
  *
  * An object written inline has no name, so no other code in the file can
  * reach it once those hold.
@@ -449,6 +641,7 @@ function count(names: Names, name: string): number {
 function provenConfigObject(
   sourceFile: ts.SourceFile,
   names: Names,
+  path: string,
 ): ts.ObjectLiteralExpression | null {
   const exported = defaultExportsOf(sourceFile);
   const [expression] = exported.expressions;
@@ -459,12 +652,64 @@ function provenConfigObject(
     count(names, "module") !== exported.commonJs ||
     count(names, "exports") !== 0 ||
     names.reachesUnnamed ||
+    names.reachesLoader ||
+    names.specifiers.some((specifier) => selfImport(specifier, path)) ||
     names.declared.has("undefined") ||
     names.imports.has("undefined")
   ) {
     return null;
   }
   return provenObject(expression, names);
+}
+
+/** A specifier that names a file by its path: `./x`, `../x`, `.`, `..`. */
+function isRelative(specifier: string): boolean {
+  return /^\.\.?(\/|$)/.test(specifier);
+}
+
+/** `specifier` as a path, resolved against the directory of `path`. */
+function resolveImport(specifier: string, path: string): string {
+  return posix.normalize(posix.join(posix.dirname(path), specifier));
+}
+
+/** The extensions a loader may add or swap: `./x.js` can load `x.ts`. */
+const CODE_EXTENSION = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/i;
+
+/**
+ * Whether `specifier` names the config file itself, with or without its
+ * extension and in any case (a disk that ignores case opens it either way).
+ */
+function selfImport(specifier: string, path: string): boolean {
+  if (!isRelative(specifier)) {
+    return false;
+  }
+  const stem = (file: string): string =>
+    posix.normalize(file).replace(CODE_EXTENSION, "").toLowerCase();
+  return stem(resolveImport(specifier, path)) === stem(path);
+}
+
+/**
+ * The repository files the config imports, resolved against its path, and
+ * whether one is named in a way that cannot be placed. `node:` built-ins
+ * and packages are not files of the repository the agent edits.
+ */
+function importedFiles(
+  specifiers: readonly string[],
+  path: string,
+): { readonly files: readonly string[]; readonly unplaced: boolean } {
+  const files: string[] = [];
+  let unplaced = false;
+  for (const specifier of specifiers) {
+    if (isRelative(specifier)) {
+      const file = resolveImport(specifier, path);
+      if (!files.includes(file)) {
+        files.push(file);
+      }
+    } else if (!specifier.startsWith("node:") && !PACKAGE.test(specifier)) {
+      unplaced = true;
+    }
+  }
+  return { files, unplaced };
 }
 
 /** A property name as text; `["protect"]` counts, `[key]` is null. */
@@ -521,7 +766,16 @@ function lookup(object: ts.ObjectLiteralExpression, name: string): Found {
   return found;
 }
 
+/**
+ * `undefined`, or `void` of a literal (`void 0`), which is undefined and
+ * runs nothing. Core's loader reads both as an absent key. `void` of
+ * anything else may run code first, so it is not read.
+ */
 function isUndefined(node: ts.Expression): boolean {
+  if (ts.isVoidExpression(node)) {
+    const operand = unwrap(node.expression);
+    return ts.isLiteralExpression(operand) || isUndefined(operand);
+  }
   return ts.isIdentifier(node) && node.text === "undefined";
 }
 
@@ -580,13 +834,25 @@ function stringList(node: ts.Expression): readonly string[] | null {
   return out;
 }
 
+/**
+ * `true` or `false`, or null. Core accepts only a boolean, and anything
+ * else (`"true"`, `!false`, `process.env.CI`) is not a value the text shows.
+ */
+function booleanValue(node: ts.Expression): boolean | null {
+  const value = unwrap(node);
+  if (value.kind === ts.SyntaxKind.TrueKeyword) {
+    return true;
+  }
+  return value.kind === ts.SyntaxKind.FalseKeyword ? false : null;
+}
+
 function readSettings(text: string, path: string): ConfigSettings {
   const parsed = parseSource(text, path);
   if (!parsed.ok) {
     return LOST;
   }
   const names = namesOf(parsed.sourceFile);
-  const root = provenConfigObject(parsed.sourceFile, names);
+  const root = provenConfigObject(parsed.sourceFile, names, path);
   if (root === null || hasProtoKey(root)) {
     return LOST;
   }
@@ -606,20 +872,31 @@ function readSettings(text: string, path: string): ConfigSettings {
     return value;
   };
   // Property order here is the order of `unreadable`.
-  return {
+  const settings = {
     cacheDir: take(["cache", "dir"], stringValue),
     guardTests: take(["guard", "tests"], stringList),
     protect: take(["protect"], stringList),
     checks: take(["checks"], stringList),
     web3Policy: take(["web3", "policy"], stringValue),
     mainBranch: take(["ci", "mainBranch"], stringValue),
+  };
+  const blocking = take(["toSatisfy", "blocking"], booleanValue);
+  const imported = importedFiles(names.specifiers, path);
+  if (imported.unplaced) {
+    unreadable.push("imports");
+  }
+  return {
+    ...settings,
+    ...(blocking === null ? {} : { toSatisfyBlocking: blocking }),
+    ...(imported.files.length > 0 ? { imports: imported.files } : {}),
     unreadable,
   };
 }
 
 /**
- * The settings of the config whose source is `text`; `path` only picks the
- * parser (TypeScript or JavaScript) by its extension.
+ * The settings of the config whose source is `text`. `path` picks the
+ * parser (TypeScript or JavaScript) by its extension, and is what the
+ * config's relative imports are resolved against (see `imports`).
  *
  * The config object is the file's one default export, in a shape that
  * proves the loader receives it as written (see `provenConfigObject`): an

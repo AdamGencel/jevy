@@ -16,9 +16,9 @@ describe("snapshot digest", () => {
   it("carries the hash version and the rules version", () => {
     const digest = snapshotDigest({ role: "button", name: "Pay" });
     expect(SNAPSHOT_HASH_VERSION).toBe(2);
-    expect(SNAPSHOT_RULES_VERSION).toBe(2);
+    expect(SNAPSHOT_RULES_VERSION).toBe(3);
     expect(digest).toBe(
-      '{"v":2,"rules":2,"tree":{"role":"button","name":"Pay"}}',
+      '{"v":2,"rules":3,"tree":{"role":"button","name":"Pay"}}',
     );
     expect(JSON.parse(digest)).toMatchObject({
       v: SNAPSHOT_HASH_VERSION,

@@ -1,0 +1,5 @@
+{
+  "name": "jevy-fixture-3d-cjs",
+  "private": true,
+  "description": "A CommonJS Playwright project (no \"type\": \"module\"), run by src/matcher.runs.test.ts"
+}

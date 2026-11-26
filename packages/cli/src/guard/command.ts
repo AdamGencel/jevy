@@ -9,7 +9,7 @@ import {
   sep,
 } from "node:path";
 import type { CliResult } from "../cli.js";
-import { analyseAll, type AnalyseOptions } from "./analyse.js";
+import { analyseAll, watchedBy, type AnalyseOptions } from "./analyse.js";
 import {
   findConfig,
   readConfigSettings,
@@ -62,8 +62,12 @@ protected path is reported: any jevy.config.*, the cache directory, the
 web3.policy file, and whatever the config lists under protect.
 
 The guard stops with exit code 2 when it cannot be sure what it is looking at:
-a --base or --head that names two refs, a config that git ignores, or a working
-tree with files marked assume-unchanged or skip-worktree.
+a --base or --head that names two refs (or a short commit id that a branch
+also takes), a config that git ignores and the loader would read, a config
+that is a symbolic link, or a working tree with files marked assume-unchanged
+or skip-worktree. Git runs no program the repository configures (fsmonitor,
+filters, hooks) on the guard's behalf, and in the working tree the files the
+guard compares or protects are checked byte for byte.
 
 Exit codes: 0 nothing at or above --fail-on, 1 something is, 2 usage, git or
 config error.
@@ -434,9 +438,14 @@ async function loadConfig(
       };
 }
 
-/** Keys the guard needs, with the flag that makes each one unnecessary. */
+/**
+ * Keys the guard needs, with the flag that makes each one unnecessary.
+ * `toSatisfy.blocking` is read from a base config only (see
+ * `toSatisfyBlocking`), so a head-only config need not show it.
+ */
 function neededKeys(
   options: GuardOptions,
+  version: LoadedConfig["version"],
 ): readonly (readonly [key: string, hint: string])[] {
   return [
     ...(options.cacheDir === undefined
@@ -447,6 +456,7 @@ function neededKeys(
       : []),
     ["protect", ""],
     ["web3.policy", ""],
+    ...(version === "base" ? [["toSatisfy.blocking", ""] as const] : []),
   ];
 }
 
@@ -464,12 +474,19 @@ function checkReadable(config: LoadedConfig, options: GuardOptions): void {
       `cannot read the settings in ${where}: the config must be an object literal the guard can read without running it`,
     );
   }
-  for (const [key, hint] of neededKeys(options)) {
+  for (const [key, hint] of neededKeys(options, config.version)) {
     if (unreadable.includes(key)) {
       throw configError(
         `cannot read ${key} in ${where}: it must be a literal the guard can read without running the config${hint}`,
       );
     }
+  }
+  if (unreadable.includes("imports")) {
+    // A value read from a file the guard cannot place could change with no
+    // change the guard sees: that file cannot be protected.
+    throw configError(
+      `${where} imports a file by a name that is neither a relative path nor a package (an alias such as @/x or #x), so the guard cannot tell which file to protect. Import it with a relative path`,
+    );
   }
 }
 
@@ -537,6 +554,39 @@ function resolveTests(
   return config?.version === "head" ? { alsoTests: listed } : { tests: listed };
 }
 
+/**
+ * Whether `toSatisfy` blocks, for the weak-test rules: only when the base
+ * config says so and the config the loader reads in head still does. A
+ * config only head has was written by the change under review, and its
+ * `blocking: true` would silence `only-advisory-assertions` for the very
+ * tests it adds; settings from head only ever widen. A change can lower
+ * strictness, never raise it: when it switches blocking off (sets it
+ * false, deletes the config, adds one the loader reads first), the tests it
+ * adds cannot fail the build either. A head value the text does not show
+ * counts as off: the finding is only a review one.
+ */
+async function toSatisfyBlocking(
+  reader: RepoReader,
+  dir: string,
+  config: LoadedConfig | null,
+): Promise<boolean> {
+  if (
+    config?.version !== "base" ||
+    config.settings.toSatisfyBlocking !== true
+  ) {
+    return false;
+  }
+  const head = await findConfig(
+    async (path) =>
+      (await reader.existsInHead(path)) ? reader.readHead(path) : null,
+    dir,
+  );
+  return (
+    head !== null &&
+    readConfigSettings(head.text, head.path).toSatisfyBlocking === true
+  );
+}
+
 function failure(error: unknown): CliResult {
   const message = messageOf(error);
   const usage = error instanceof UsageError ? `\n${GUARD_USAGE}` : "";
@@ -582,11 +632,21 @@ export async function runGuard(
       configDir: dir,
       cacheDir,
     });
+    const analysis: AnalyseOptions = {
+      cacheDir,
+      ...resolveTests(options, config),
+      testsDir: dir,
+      protect,
+      toSatisfyBlocking: await toSatisfyBlocking(repo.reader, dir, config),
+    };
+    // In the working tree, the files the guard compares or protects are
+    // checked byte for byte, not taken on git's word (see `GitRepo.watch`).
+    const reader = repo.watch?.(watchedBy(analysis)) ?? repo.reader;
     // The index goes second: what is staged is what a commit would hold,
     // whatever the working tree looks like now.
     const findings = await analyseAll(
-      [repo.reader, ...(repo.index === undefined ? [] : [repo.index])],
-      { cacheDir, ...resolveTests(options, config), testsDir: dir, protect },
+      [reader, ...(repo.index === undefined ? [] : [repo.index])],
+      analysis,
     );
     const report = buildReport(
       options.base,

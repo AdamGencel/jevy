@@ -63,7 +63,7 @@ const GOLDEN: readonly Golden[] = [
         { role: "button", name: "Pay", disabled: true },
       ],
     },
-    hash: "sha256:2c51bb2f79c17430171704575df119f188f826b3683634b3a981e3fe72be112c",
+    hash: "sha256:301fd5299f34811243a666eaffa4f000a5b239909d2ca90efc2bb4502827ea3d",
   },
   {
     name: "a page with an email address",
@@ -72,7 +72,7 @@ const GOLDEN: readonly Golden[] = [
       name: "Account",
       children: [{ role: "paragraph", name: "Signed in as ada@example.com" }],
     },
-    hash: "sha256:dac5ad2deab714a1a1db4a8cbe212e93ae0db0679d1699b323f16e98f84a91c8",
+    hash: "sha256:530d920e317d6083f8944b2b84bcde08d88208f3e60fb83f079af4e6276dcc9c",
   },
   {
     name: "a password textbox",
@@ -84,12 +84,12 @@ const GOLDEN: readonly Golden[] = [
         { role: "textbox", name: "Password", value: "hunter2" },
       ],
     },
-    hash: "sha256:44c55bf2e0c61f1f21972d36f91fc61ec2e5da28e5f116df2212abfa230c02e9",
+    hash: "sha256:e8db12d93e75506a6da181b7d5d377e41ca5506d37a219ec5bfb96692c42c6a7",
   },
   {
     name: "a seed phrase shown one word per node",
     snapshot: seedPage(SEED_WORDS),
-    hash: "sha256:5988c3cce094993fea5898beb8227df5346988145efe127a0e7e63ce24a39559",
+    hash: "sha256:22255645b4cf1ae42f8e6fb19079d7cf9c5b06fc0e0d6be035fa0ca5a6c23d2f",
   },
   {
     name: "a 0x private key",
@@ -103,7 +103,7 @@ const GOLDEN: readonly Golden[] = [
         },
       ],
     },
-    hash: "sha256:e343b04de765605594439b7ba58115cdc3e24d13db2a960639d593b2343fdf8a",
+    hash: "sha256:deea4be5e40ff385da9a265ffd49b05d506cfeaaaea01561c2f9769b7e807df4",
   },
   {
     name: "text with a timestamp, a UUID and a long digit run",
@@ -111,7 +111,7 @@ const GOLDEN: readonly Golden[] = [
       role: "status",
       name: "Order 123456789 (550e8400-e29b-41d4-a716-446655440000) placed 2026-11-18T09:30:00Z",
     },
-    hash: "sha256:5b7782bcd1164f9174b0b40a4566913f447f0de057cc240b0d11d6ec1cdf61db",
+    hash: "sha256:a14ffcd3a732eaf5ba512d8d56643128863a4f2b84f4abee6162c38a4ef5cebf",
   },
   {
     name: "an unnamed generic wrapper that gets unwrapped",
@@ -127,7 +127,7 @@ const GOLDEN: readonly Golden[] = [
         },
       ],
     },
-    hash: "sha256:2f4889a8a0c7f5703fc113e61f59e76b7f7296f51111a5c1271bc6312c1e6a46",
+    hash: "sha256:135a0f3e61bc1844c7985fb8a9b6bdb295d8f654c9194974a08a93f1d0e28e64",
   },
   {
     name: "a region slice",
@@ -147,7 +147,23 @@ const GOLDEN: readonly Golden[] = [
       ],
     },
     options: { region: { role: "region", name: "Basket" } },
-    hash: "sha256:1de6456c85d64bd771ae3fa41135745ed89f33c6533030eb87633b81e3bd9ecb",
+    hash: "sha256:753c7ec36a783c8a40c21c73b657af2b43f8175dd63014160d05e785b19a4926",
+  },
+  {
+    name: "a link with a query string and a fragment",
+    snapshot: {
+      role: "navigation",
+      name: "Account",
+      children: [
+        {
+          role: "link",
+          name: "Orders",
+          url: "https://shop.example/orders?session=abc123#recent",
+        },
+        { role: "link", name: "Sign out", url: "/logout" },
+      ],
+    },
+    hash: "sha256:95b4e87371ea20ae6fdda928d78f8fb5df3efc3a869068c2234e86e9ba98a83d",
   },
 ];
 
@@ -155,7 +171,7 @@ describe("golden snapshot hashes", () => {
   it("is pinned to the current hash and rules versions", () => {
     // Change these together with the literals, never alone.
     expect(SNAPSHOT_HASH_VERSION).toBe(2);
-    expect(SNAPSHOT_RULES_VERSION).toBe(2);
+    expect(SNAPSHOT_RULES_VERSION).toBe(3);
   });
 
   for (const golden of GOLDEN) {
@@ -163,6 +179,21 @@ describe("golden snapshot hashes", () => {
       expect(hashSnapshot(golden.snapshot, golden.options)).toBe(golden.hash);
     });
   }
+
+  it("lets the link's address change the hash", () => {
+    const link = GOLDEN.find((golden) => golden.name.startsWith("a link"));
+    expect(link).toBeDefined();
+    expect(
+      hashSnapshot({
+        role: "navigation",
+        name: "Account",
+        children: [
+          { role: "link", name: "Orders", url: "https://shop.example/refunds" },
+          { role: "link", name: "Sign out", url: "/logout" },
+        ],
+      }),
+    ).not.toBe(link?.hash);
+  });
 
   // The fixtures above only pin something if the rule they name really ran.
   it("exercises the rule each fixture names", () => {
@@ -203,6 +234,18 @@ describe("golden snapshot hashes", () => {
       children: [
         { role: "link", name: "Home" },
         { role: "link", name: "Orders" },
+      ],
+    });
+    hashOf("a link with a query string and a fragment", {
+      role: "navigation",
+      name: "Account",
+      children: [
+        {
+          role: "link",
+          name: "Orders",
+          url: "https://ada:pw@shop.example/orders?session=zzz",
+        },
+        { role: "link", name: "Sign out", url: "/logout#top" },
       ],
     });
     hashOf("a region slice", {

@@ -31,8 +31,8 @@ export const SESSION_START_USAGE = `Usage: jevy hook session-start [--cwd <dir>]
 A hook that runs when a coding agent's session starts. Reads the agent's hook
 input (JSON with session_id) on stdin and records the commit HEAD points at,
 so that \`jevy hook stop\` can check what the session itself committed. The
-record is kept outside the repository, one per session, and a later start of
-the same session (a resume, a compaction) never replaces it. Nothing is
+record is kept outside the repository, one per session and repository, and a
+later start of the same session (a resume, a compaction) never replaces it. Nothing is
 recorded on a branch with no commit yet or outside a git repository.
 
   --cwd <dir>           The project directory. Default: the current directory.
@@ -63,9 +63,11 @@ function parseArgs(argv: readonly string[]): SessionStartOptions | "help" {
 }
 
 /**
- * Record `HEAD` for the session the input names. No session id, or no
- * commit to name, records nothing: the stop hook then compares as it does
- * when this hook is not wired at all.
+ * Record `HEAD` for the session the input names, under the repository's
+ * top level, so that the stop hook finds it from any directory of the
+ * repository. No session id, no repository or no commit to name records
+ * nothing: the stop hook then compares as it does when this hook is not
+ * wired at all.
  */
 async function record(projectDir: string, deps: HookDeps): Promise<void> {
   const input = parseHookInput(await deps.readStdin());
@@ -77,9 +79,13 @@ async function record(projectDir: string, deps: HookDeps): Promise<void> {
   if (head === null) {
     return;
   }
+  const top = await deps.git.topLevel(projectDir);
+  if (top === null) {
+    return;
+  }
   await recordStart(
     deps.state,
-    startPath(deps.state.dir, projectDir, sessionId),
+    startPath(deps.state.dir, top, sessionId),
     head,
   );
 }

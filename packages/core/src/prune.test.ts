@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SnapshotError } from "./errors.js";
+import { RedactionError, SnapshotError } from "./errors.js";
 import { estimateSnapshotTokens, hashSnapshot } from "./hash.js";
 import { projectSnapshot } from "./project.js";
 import {
@@ -311,6 +311,64 @@ describe("pruning keeps what a question is most likely about", () => {
   });
 });
 
+describe("pruning never joins a secret together", () => {
+  const words = [
+    "abandon",
+    "ability",
+    "able",
+    "about",
+    "above",
+    "absent",
+    "absorb",
+    "abstract",
+    "absurd",
+    "abuse",
+    "access",
+    "accident",
+  ];
+
+  it("throws RedactionError when removing a node joins a seed phrase", () => {
+    const tree: AccessibilityNode = {
+      role: "main",
+      children: [
+        { role: "paragraph", name: words.slice(0, 6).join(" ") },
+        {
+          role: "list",
+          children: [
+            { role: "listitem", name: "zebra-crossing xylophone quixotic" },
+          ],
+        },
+        { role: "paragraph", name: words.slice(6).join(" ") },
+      ],
+    };
+    expect(() => pruneSnapshot(tree, { maxNodes: 4, keepRoles: [] })).toThrow(
+      RedactionError,
+    );
+  });
+
+  it("throws RedactionError rather than return a root cut down to a secret", () => {
+    // 100 hex characters are not a 64-character key, but a 64-character
+    // prefix of them is. The token estimate is a quarter of the JSON length,
+    // so with "ID " in front some budget cuts the name to exactly that.
+    const root: AccessibilityNode = {
+      role: "main",
+      name: `ID ${"a".repeat(100)}`,
+    };
+    const key = /\b[a-f0-9]{64}\b/;
+    let refused = 0;
+    for (let maxTokens = 10; maxTokens <= 40; maxTokens += 1) {
+      try {
+        const pruned = pruneSnapshot(root, { maxTokens });
+        expect(pruned.snapshot.name ?? "").not.toMatch(key);
+      } catch (error) {
+        expect(error).toBeInstanceOf(RedactionError);
+        refused += 1;
+      }
+    }
+    expect(refused).toBeGreaterThan(0);
+  });
+});
+
 describe("the token budget is always met, or pruning fails", () => {
   it("shortens a huge root description", () => {
     const pruned = pruneSnapshot(
@@ -366,6 +424,24 @@ describe("the token budget is always met, or pruning fails", () => {
     expect(tighter.snapshot.valuetext).toBeUndefined();
     expect(tighter.snapshot.roledescription).toMatch(/^r+$/);
     expect(tighter.approxTokens).toBeLessThanOrEqual(15);
+  });
+
+  it("shortens the root URL before it touches the name", () => {
+    const link: AccessibilityNode = {
+      role: "link",
+      name: "n".repeat(200),
+      url: `/${"u".repeat(200)}`,
+    };
+    const pruned = pruneSnapshot(link, { maxTokens: 70 });
+    expect(pruned.snapshot.url).toMatch(/^\/u+$/);
+    expect(pruned.snapshot.name).toBe("n".repeat(200));
+    expect(pruned.truncated).toBe(true);
+    expect(pruned.approxTokens).toBeLessThanOrEqual(70);
+
+    const tighter = pruneSnapshot(link, { maxTokens: 20 });
+    expect(tighter.snapshot.url).toBeUndefined();
+    expect(tighter.snapshot.name).toMatch(/^n+$/);
+    expect(tighter.approxTokens).toBeLessThanOrEqual(20);
   });
 
   it("does not split a surrogate pair when it shortens", () => {

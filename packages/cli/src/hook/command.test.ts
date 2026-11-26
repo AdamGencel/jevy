@@ -19,6 +19,7 @@ function deps(stdin: string): HookDeps {
     refExists: () => Promise.resolve(true),
     git: {
       head: () => Promise.resolve("a".repeat(40)),
+      topLevel: () => Promise.resolve("/repo"),
       originHead: () => Promise.resolve(null),
       readAt: () => Promise.resolve(null),
       trackedConfigs: () => Promise.resolve([]),

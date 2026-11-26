@@ -169,6 +169,16 @@ export interface JevyConfig {
     /** Globs for the files `jevy guard` compares as tests. */
     readonly tests?: readonly string[];
   };
+  readonly toSatisfy?: {
+    /**
+     * When true, a `fail` fails the test and `needs-review` follows
+     * `ci.needsReview`. Defaults to false: verdicts are reported and the exit
+     * code does not change. It is the one switch for the whole project; there
+     * is no per-test switch, because a local `false` would quietly weaken a
+     * test.
+     */
+    readonly blocking?: boolean;
+  };
 }
 
 export interface ResolvedJevDecider {
@@ -222,6 +232,7 @@ export interface ResolvedJevyConfig {
   readonly checks: readonly string[];
   /** `tests` is null when the guard's built-in test globs apply. */
   readonly guard: { readonly tests: readonly string[] | null };
+  readonly toSatisfy: { readonly blocking: boolean };
   readonly warnings: readonly string[];
 }
 
@@ -280,6 +291,7 @@ export function parseConfig(
     "protect",
     "checks",
     "guard",
+    "toSatisfy",
   ]);
 
   const deciders = readDeciders(input["deciders"]);
@@ -297,6 +309,7 @@ export function parseConfig(
       ? []
       : readStringList(input["checks"], "checks");
   const guard = readGuard(input["guard"]);
+  const toSatisfy = readToSatisfy(input["toSatisfy"]);
 
   const resolved: ResolvedJevyConfig = {
     decider,
@@ -310,6 +323,7 @@ export function parseConfig(
     protect,
     checks,
     guard,
+    toSatisfy,
     warnings: web3Result.warnings,
   };
   assertChoiceAllowed(resolved);
@@ -336,7 +350,7 @@ export async function loadConfig(
   if (!isRecord(imported)) {
     throw new ConfigError(`${file} did not export a config object`);
   }
-  const exported: unknown = imported["default"];
+  const exported = configExport(imported);
   if (typeof exported === "function") {
     throw new ConfigError(
       `${file} default-exports a function. Call defineConfig({ ... }) and export the result.`,
@@ -347,6 +361,28 @@ export async function loadConfig(
   }
   if (options?.env === undefined) return parseConfig(exported);
   return parseConfig(exported, { env: options.env });
+}
+
+/**
+ * The config object a loaded module default-exports. A `jevy.config.ts` in a
+ * CommonJS project is compiled to CommonJS (by Playwright in a test worker,
+ * or by a bundler), and Node 22 hands it over as
+ * `{ default: { __esModule: true, default: config } }`; Node 24 unwraps it
+ * itself. Only a module marked `__esModule: true` is unwrapped, so a plain
+ * `module.exports = { default: … }` is still read as written, and refused.
+ */
+export function configExport(
+  imported: Readonly<Record<string, unknown>>,
+): unknown {
+  const exported = imported["default"];
+  if (
+    isRecord(exported) &&
+    exported["__esModule"] === true &&
+    Object.hasOwn(exported, "default")
+  ) {
+    return exported["default"];
+  }
+  return exported;
 }
 
 /**
@@ -957,6 +993,23 @@ function readGuard(value: unknown): ResolvedJevyConfig["guard"] {
 }
 
 /**
+ * Advisory unless the project says otherwise: until eval has calibrated the
+ * thresholds (step 4), a verdict should not fail a build on its own.
+ */
+function readToSatisfy(value: unknown): ResolvedJevyConfig["toSatisfy"] {
+  if (value === undefined) return { blocking: false };
+  if (!isRecord(value)) throw new ConfigError("toSatisfy must be an object");
+  rejectUnknown(value, ["blocking"], "toSatisfy");
+  const blocking = value["blocking"];
+  return {
+    blocking:
+      blocking === undefined
+        ? false
+        : readBoolean(blocking, "toSatisfy.blocking"),
+  };
+}
+
+/**
  * A list of globs, or null when the key is absent. The guard reads these
  * lists from the source text and matches them itself, so the loader only
  * refuses what that matcher cannot honour. A glob that silently matched
@@ -981,6 +1034,15 @@ type GlobAlternatives =
   | { readonly ok: true; readonly alternatives: readonly string[] }
   | { readonly ok: false; readonly problem: string };
 
+/**
+ * Whether `text` starts or ends with whitespace. A space inside a name
+ * (`my docs`) is a real name; `{a, b}` and `tests /x` are slips that name
+ * no file, so the glob would match nothing.
+ */
+function hasEdgeSpace(text: string): boolean {
+  return text !== text.trim();
+}
+
 /** Expand `{a,b}` groups into every plain pattern they stand for. */
 function expandGlobBraces(glob: string): GlobAlternatives {
   let alternatives: readonly string[] = [""];
@@ -1000,6 +1062,13 @@ function expandGlobBraces(glob: string): GlobAlternatives {
     }
     const head = rest.slice(0, open);
     const options = body.split(",");
+    if (options.some(hasEdgeSpace)) {
+      return {
+        ok: false,
+        problem:
+          "must not have whitespace at the start or end of a brace alternative",
+      };
+    }
     if (alternatives.length * options.length > MAX_GLOB_ALTERNATIVES) {
       return {
         ok: false,
@@ -1031,6 +1100,9 @@ function globAlternativeProblem(alternative: string): string | null {
     return "must not start with '!': negated globs are not supported";
   }
   if (segments.includes("..")) return "must stay inside the project";
+  if (segments.some(hasEdgeSpace)) {
+    return "must not have whitespace at the start or end of a path segment";
+  }
   if (segments.some((segment) => segment !== "**" && segment.includes("**"))) {
     return "must use ** as a whole path segment";
   }

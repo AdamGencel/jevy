@@ -433,4 +433,52 @@ describe("the hooks started in a directory that is not the config's", () => {
       }),
     ).toEqual({ code: 0, stdout: "", stderr: "" });
   });
+
+  it("share one record of the session's start, wherever each hook runs", async () => {
+    // As the printed settings run them: session-start at the root of the
+    // repository, stop in the directory of the config.
+    const app = join(root, "packages", "app");
+    const git = (...args: string[]): void => {
+      execFileSync("git", args, { cwd: root });
+    };
+    writeFileSync(join(app, "tests", "pay.spec.ts"), SPEC);
+    git("add", "-A");
+    git("commit", "-q", "-m", "a test");
+    expect(
+      (await at(root, "session-start", { session_id: "shared" })).code,
+    ).toBe(0);
+    writeFileSync(
+      join(app, "tests", "pay.spec.ts"),
+      SPEC.replace("test(", "test.skip("),
+    );
+    git("commit", "-q", "-am", "skip it");
+    const result = await at(app, "stop", { session_id: "shared" });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("since the session's start");
+    expect(result.stderr).toContain("tests/pay.spec.ts: skip-added");
+  });
+
+  it("pre-edit started below the config's directory refuses an edit to the config", async () => {
+    const app = join(root, "packages", "app");
+    const result = await at(join(app, "tests"), "pre-edit", {
+      tool_name: "Write",
+      tool_input: { file_path: join(app, "jevy.config.ts") },
+    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("the repository has ../jevy.config.ts");
+  });
+
+  it("pre-edit refuses an edit to what runs the hooks at the root of the repository", async () => {
+    const app = join(root, "packages", "app");
+    for (const path of [".claude/settings.json", "node_modules/.bin/jevy"]) {
+      const result = await at(app, "pre-edit", {
+        tool_name: "Write",
+        tool_input: { file_path: join(root, path) },
+      });
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(
+        "is protected: it keeps the Jevy hooks themselves working.",
+      );
+    }
+  });
 });

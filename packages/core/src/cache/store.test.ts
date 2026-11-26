@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CacheError } from "../errors.js";
-import { JsonlDecisionStore } from "./jsonl-store.js";
+import { FileSystemJsonlStore, JsonlDecisionStore } from "./jsonl-store.js";
+import type { CacheFileSystem } from "./jsonl-store.js";
 import { MemoryDecisionStore } from "./memory-store.js";
 import { serialiseRecord } from "./record.js";
 import type { DecisionRecord } from "./record.js";
@@ -18,7 +19,7 @@ import type { DecisionStore } from "./store.js";
 
 function makeRecord(changes: Partial<DecisionRecord> = {}): DecisionRecord {
   return {
-    v: 1,
+    v: 2,
     key: `sha256:${"1".repeat(64)}`,
     spec: "tests/checkout.spec.ts",
     step: "toSatisfy#1",
@@ -232,6 +233,32 @@ describe("JsonlDecisionStore", () => {
     expect(await new JsonlDecisionStore({ dir }).list()).toHaveLength(3);
   });
 
+  it("skips version 1 records, which no current key can find, and keeps the rest of the file", async () => {
+    const current = makeRecord({ spec: "a.spec.ts", key: KEY_A });
+    const old = JSON.stringify({ ...current, v: 1, key: KEY_B });
+    await writeFile(
+      join(dir, "a.spec.ts.jsonl"),
+      `${old}\n${serialiseRecord(current)}\n`,
+    );
+    const store = new JsonlDecisionStore({ dir });
+    expect(await store.list()).toEqual([current]);
+    expect(await store.latest(KEY_B)).toBeUndefined();
+    expect(await store.forStep("a.spec.ts", current.step)).toEqual([current]);
+    await store.append([makeRecord({ spec: "a.spec.ts", key: KEY_B })]);
+    expect(await new JsonlDecisionStore({ dir }).list()).toHaveLength(2);
+  });
+
+  it("refuses a version 1 line that carries a field version 1 never had", async () => {
+    const file = join(dir, "a.spec.ts.jsonl");
+    await writeFile(
+      file,
+      `${serialiseRecord(makeRecord({ spec: "a.spec.ts" }))}\n{"v":1,"page":"secret text"}\n`,
+    );
+    await expect(new JsonlDecisionStore({ dir }).list()).rejects.toThrow(
+      /a\.spec\.ts\.jsonl:2: .*unknown field "page"/,
+    );
+  });
+
   it("ignores files that are not .jsonl", async () => {
     await mkdir(join(dir, "notes"));
     await writeFile(join(dir, "notes", "README.md"), "# not a cache\n");
@@ -264,5 +291,101 @@ describe("JsonlDecisionStore", () => {
     );
     await expect(store.forStep(spec, "s")).rejects.toThrow(CacheError);
     expect(await readdir(dir)).toEqual([]);
+  });
+});
+
+/**
+ * A file system that, like macOS and Windows by default, treats two paths
+ * that differ only by case as one file, and keeps the first spelling.
+ */
+function caseInsensitiveFileSystem(): CacheFileSystem {
+  const files = new Map<string, { name: string; text: string }>();
+  const fold = (path: string): string => path.normalize("NFC").toLowerCase();
+  return {
+    list: (dir) =>
+      Promise.resolve(
+        [...files.values()]
+          .map((file) => file.name)
+          .filter((name) => name.startsWith(`${dir}/`))
+          .map((name) => name.slice(dir.length + 1)),
+      ),
+    read: (path) => {
+      const file = files.get(fold(path));
+      if (file === undefined) return Promise.reject(new Error("ENOENT"));
+      return Promise.resolve(file.text);
+    },
+    append: (path, text) => {
+      const existing = files.get(fold(path));
+      files.set(fold(path), {
+        name: existing?.name ?? path,
+        text: (existing?.text ?? "") + text,
+      });
+      return Promise.resolve();
+    },
+  };
+}
+
+describe("JsonlDecisionStore: spec names that differ only by case", () => {
+  it("refuses to record a spec whose file differs only by case from another spec's", async () => {
+    const store = new JsonlDecisionStore({ dir });
+    await store.append([makeRecord({ spec: "tests/A.spec.ts", key: KEY_A })]);
+    await expect(
+      store.append([makeRecord({ spec: "tests/a.spec.ts", key: KEY_B })]),
+    ).rejects.toThrow(
+      /"tests\/a\.spec\.ts".*"tests\/A\.spec\.ts".*differ only by case/,
+    );
+    expect(await readdir(join(dir, "tests"))).toEqual(["A.spec.ts.jsonl"]);
+    const reopened = new JsonlDecisionStore({ dir });
+    expect((await reopened.list()).map((r) => r.spec)).toEqual([
+      "tests/A.spec.ts",
+    ]);
+  });
+
+  it("refuses two such specs in one batch and writes neither", async () => {
+    const store = new JsonlDecisionStore({ dir });
+    await expect(
+      store.append([
+        makeRecord({ spec: "tests/A.spec.ts", key: KEY_A }),
+        makeRecord({ spec: "tests/a.spec.ts", key: KEY_B }),
+      ]),
+    ).rejects.toThrow(CacheError);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it("names both specs and the cause when one file holds both spellings", async () => {
+    await mkdir(join(dir, "tests"));
+    await writeFile(
+      join(dir, "tests", "a.spec.ts.jsonl"),
+      `${serialiseRecord(makeRecord({ spec: "tests/a.spec.ts", key: KEY_A }))}\n${serialiseRecord(makeRecord({ spec: "tests/A.spec.ts", key: KEY_B }))}\n`,
+    );
+    await expect(new JsonlDecisionStore({ dir }).list()).rejects.toThrow(
+      /"tests\/a\.spec\.ts" and "tests\/A\.spec\.ts".*differ only by case.*case-insensitive/,
+    );
+  });
+
+  it("on a case-insensitive file system, refuses the second spelling and names both when two stores wrote one file", async () => {
+    const files = caseInsensitiveFileSystem();
+    const open = (): FileSystemJsonlStore =>
+      new FileSystemJsonlStore({ dir }, files);
+
+    const first = open();
+    await first.append([makeRecord({ spec: "tests/A.spec.ts", key: KEY_A })]);
+    await expect(
+      open().append([makeRecord({ spec: "tests/a.spec.ts", key: KEY_B })]),
+    ).rejects.toThrow(/differ only by case/);
+
+    // Two stores that loaded before either wrote cannot see each other.
+    const other = caseInsensitiveFileSystem();
+    const one = new FileSystemJsonlStore({ dir }, other);
+    const two = new FileSystemJsonlStore({ dir }, other);
+    expect(await one.list()).toEqual([]);
+    expect(await two.list()).toEqual([]);
+    await one.append([makeRecord({ spec: "tests/A.spec.ts", key: KEY_A })]);
+    await two.append([makeRecord({ spec: "tests/a.spec.ts", key: KEY_B })]);
+    await expect(
+      new FileSystemJsonlStore({ dir }, other).list(),
+    ).rejects.toThrow(
+      /"tests\/A\.spec\.ts" and "tests\/a\.spec\.ts".*differ only by case/,
+    );
   });
 });

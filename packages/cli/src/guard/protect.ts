@@ -39,10 +39,22 @@ export interface ProtectRules {
   readonly cacheDir: string;
   /** The `web3.policy` file, repository-relative, or null. */
   readonly policyFile: string | null;
+  /**
+   * Files the config imports, repository-relative, with every name the
+   * loader could open for each import (see `importCandidates`). A value the
+   * config reads from one of them changes when the file does, so they are
+   * protected as the config is. Absent when the config imports none.
+   */
+  readonly imports?: readonly string[];
 }
 
 export type Protection =
-  | { readonly reason: "config" }
+  /**
+   * `importedBy` is set when the path is not a config itself but a file a
+   * config imports. It is an addition to the shape, so code that knows only
+   * `reason` still reads such a file as the config, which it is in effect.
+   */
+  | { readonly reason: "config"; readonly importedBy?: "the Jevy config" }
   | { readonly reason: "cache" }
   | { readonly reason: "policy" }
   /** `glob` is repository-relative: the directory, then the entry. */
@@ -108,6 +120,7 @@ interface Form {
   readonly globs: readonly string[];
   readonly cacheDir: readonly string[];
   readonly policyFile: readonly string[] | null;
+  readonly imports: readonly (readonly string[])[];
 }
 
 interface Prepared {
@@ -131,6 +144,7 @@ function formOf(rules: ProtectRules, spell: (text: string) => string): Form {
     globs: rules.globs.map(spell),
     cacheDir: segments(rules.cacheDir),
     policyFile: rules.policyFile === null ? null : segments(rules.policyFile),
+    imports: (rules.imports ?? []).map(segments),
   };
 }
 
@@ -246,6 +260,13 @@ function protectionOfSegments(
   const both = spellings(path, rules);
   if (both.some(([, spelt]) => CONFIG_NAME.test(spelt.at(-1) ?? ""))) {
     return { reason: "config" };
+  }
+  if (
+    both.some(([form, spelt]) =>
+      form.imports.some((file) => sameSegments(file, spelt)),
+    )
+  ) {
+    return { reason: "config", importedBy: "the Jevy config" };
   }
   if (both.some(([form, spelt]) => inCache(form, spelt))) {
     return { reason: "cache" };
@@ -380,6 +401,65 @@ function resolvePolicy(entry: string, configDir: readonly string[]): string {
   return segments.join("/");
 }
 
+/** What a loader may add to an import written without an extension. */
+const LOADABLE = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".json",
+];
+
+/** A JavaScript extension that TypeScript-aware loaders map to TypeScript. */
+const JS_EXTENSION = /\.(js|jsx|mjs|cjs)$/i;
+
+/**
+ * Every file an import of `file` can load: the name as written; for a `.js`
+ * name, the TypeScript file beside it that a TypeScript-aware loader opens
+ * instead; for a name without an extension, each extension a loader tries
+ * and the `index` file of a directory by that name. Protecting a name that
+ * is not there costs nothing, and missing the one that is loads unseen.
+ */
+function importCandidates(file: string): readonly string[] {
+  const js = JS_EXTENSION.exec(file);
+  if (js !== null) {
+    const stem = file.slice(0, js.index);
+    return [file, ...[".ts", ".tsx", ".mts", ".cts"].map((ext) => stem + ext)];
+  }
+  const last = file.slice(file.lastIndexOf("/") + 1);
+  if (last.includes(".") && !last.startsWith(".")) {
+    return [file];
+  }
+  return [
+    file,
+    ...LOADABLE.map((ext) => file + ext),
+    ...LOADABLE.map((ext) => `${file}/index${ext}`),
+  ];
+}
+
+/**
+ * The imports as repository-relative files with every candidate name. They
+ * arrive resolved against the config's path, which is in the same frame as
+ * the paths later checked against the rules, so they are only tidied here.
+ * One outside the repository cannot be protected: refuse it, as dropping it
+ * would let the value it holds change unseen.
+ */
+function resolveImports(imports: readonly string[]): readonly string[] {
+  return imports.flatMap((entry) => {
+    const segments = isAbsolute(entry) ? null : resolveSegments([], entry);
+    if (segments === null || segments.length === 0) {
+      throw new GuardError(
+        `the Jevy config imports "${entry}", which is outside the repository, so the guard cannot protect it`,
+      );
+    }
+    return importCandidates(segments.join("/"));
+  });
+}
+
 /**
  * Build the rules for one config.
  *
@@ -397,9 +477,15 @@ function resolvePolicy(entry: string, configDir: readonly string[]): string {
  * The cache directory must be a directory below the root for the same
  * reason; at the root itself it would protect every file.
  *
- * This reads `settings.protect` and `settings.web3Policy` only. It does not
- * look at `settings.unreadable`: a caller that must fail closed checks that
- * first, since an unreadable `protect` arrives here as "no list".
+ * `settings.imports`, the files the config imports, are protected as the
+ * config is. They are already in the frame the paths checked against the
+ * rules are in (see `ConfigSettings.imports`), so they are not joined to
+ * `configDir`; one that climbs out of that frame throws GuardError.
+ *
+ * This reads `settings.protect`, `settings.web3Policy` and
+ * `settings.imports` only. It does not look at `settings.unreadable`: a
+ * caller that must fail closed checks that first, since an unreadable
+ * `protect` arrives here as "no list".
  */
 export function buildProtectRules(input: {
   readonly settings: ConfigSettings | null;
@@ -414,6 +500,7 @@ export function buildProtectRules(input: {
     );
   }
   const policy = input.settings?.web3Policy ?? null;
+  const imports = resolveImports(input.settings?.imports ?? []);
   return {
     globDir: configDir.join("/"),
     globs: (input.settings?.protect ?? []).map((entry) =>
@@ -421,13 +508,16 @@ export function buildProtectRules(input: {
     ),
     cacheDir: cacheDir.join("/"),
     policyFile: policy === null ? null : resolvePolicy(policy, configDir),
+    ...(imports.length > 0 ? { imports } : {}),
   };
 }
 
 function why(protection: Protection): string {
   switch (protection.reason) {
     case "config":
-      return "the Jevy config";
+      return protection.importedBy === undefined
+        ? "the Jevy config"
+        : "a file imported by the Jevy config";
     case "cache":
       return "the decision cache";
     case "policy":

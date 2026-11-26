@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
+import { GIT_CONFIG_ARGS, GIT_ENV } from "./git.js";
 
 /**
  * The processes a hook starts: the project's check commands, and one git
@@ -208,8 +209,14 @@ export function gitRefExists(ref: string, cwd: string): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       "git",
-      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-      { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      [
+        ...GIT_CONFIG_ARGS,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `${ref}^{commit}`,
+      ],
+      { cwd, env: { ...process.env, ...GIT_ENV, GIT_TERMINAL_PROMPT: "0" } },
       (error) => {
         resolve(error === null);
       },

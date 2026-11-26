@@ -99,6 +99,117 @@ describe("diffJevyConfig", () => {
     ]);
   });
 
+  describe("toSatisfy.blocking", () => {
+    const BLOCKING = JEVY.replace(
+      "  cache:",
+      "  toSatisfy: { blocking: true },\n  cache:",
+    );
+
+    it("reports blocking switched from true to false as weakening", () => {
+      const after = BLOCKING.replace("blocking: true", "blocking: false");
+      expect(jevy(BLOCKING, after)).toEqual([
+        {
+          kind: "blocking-switched-off",
+          severity: "weakening",
+          file: "jevy.config.ts",
+          line: 6,
+          message:
+            "toSatisfy.blocking switched off: toSatisfy now only reports and cannot fail a test",
+          before: "true",
+          after: "false",
+        },
+      ]);
+    });
+
+    it.each([
+      ["the key", BLOCKING.replace("{ blocking: true }", "{}")],
+      ["the whole toSatisfy setting", JEVY],
+    ])(
+      "reports %s removed as weakening, since the default is false",
+      (_name, after) => {
+        expect(jevy(BLOCKING, after)).toEqual([
+          {
+            kind: "blocking-switched-off",
+            severity: "weakening",
+            file: "jevy.config.ts",
+            line: 6,
+            message:
+              "toSatisfy.blocking switched off (removed; the default is false): toSatisfy now only reports and cannot fail a test",
+            before: "true",
+          },
+        ]);
+      },
+    );
+
+    it("reports switching blocking on as config-changed, as any other key", () => {
+      expect(kinds(jevy(JEVY, BLOCKING))).toEqual(["config-changed"]);
+      const off = BLOCKING.replace("blocking: true", "blocking: false");
+      expect(jevy(off, BLOCKING)).toMatchObject([
+        {
+          kind: "config-changed",
+          severity: "review",
+          message: "toSatisfy.blocking changed",
+        },
+      ]);
+    });
+
+    it("leaves a value it cannot read for review: it may still be true", () => {
+      const after = BLOCKING.replace("blocking: true", "blocking: isCi");
+      expect(kinds(jevy(BLOCKING, after))).toEqual(["config-changed"]);
+      const spread = BLOCKING.replace("{ blocking: true }", "{ ...shared }");
+      expect(kinds(jevy(BLOCKING, spread))).not.toContain(
+        "blocking-switched-off",
+      );
+    });
+
+    it("finds it switched off through a constant the object reads", () => {
+      const before = BLOCKING.replace("blocking: true", "blocking: ON").replace(
+        "export default",
+        "const ON = true;\nexport default",
+      );
+      const after = before.replace("const ON = true", "const ON = false");
+      // The object's own code is unchanged; the constant outside it is not.
+      expect(kinds(jevy(before, after))).toEqual([
+        "config-changed",
+        "blocking-switched-off",
+      ]);
+    });
+
+    it.each([
+      [
+        "toSatisfy: undefined",
+        BLOCKING.replace("{ blocking: true }", "undefined"),
+      ],
+      ["toSatisfy: void 0", BLOCKING.replace("{ blocking: true }", "void 0")],
+      [
+        "blocking: void 0",
+        BLOCKING.replace("blocking: true", "blocking: void 0"),
+      ],
+    ])("reports %s as one finding, blocking switched off", (_name, after) => {
+      expect(kinds(jevy(BLOCKING, after))).toEqual(["blocking-switched-off"]);
+    });
+
+    it("reports toSatisfy moved into a constant once, beside the new constant", () => {
+      const after = BLOCKING.replace("{ blocking: true }", "OFF").replace(
+        "export default",
+        "const OFF = { blocking: false };\nexport default",
+      );
+      expect(jevy(BLOCKING, after)).toMatchObject([
+        {
+          kind: "config-changed",
+          message:
+            "code outside the config object changed (a constant, import or helper it may read); review it by hand",
+        },
+        { kind: "blocking-switched-off", after: "false" },
+      ]);
+    });
+
+    it("says nothing when blocking stays on", () => {
+      const after = BLOCKING.replace("pass: 0.8", "pass: 0.9");
+      expect(kinds(jevy(BLOCKING, after))).toEqual(["config-changed"]);
+    });
+  });
+
   it("reports a changed protect list as a protected path change", () => {
     const listed = JEVY.replace(
       "  thresholds:",
@@ -415,6 +526,80 @@ export default defineConfig({
     );
     expect(pw(PW, ignored)).toMatchObject([
       { kind: "config-changed", message: "testIgnore changed", line: 4 },
+    ]);
+  });
+
+  it("compares the top-level retries with the top-level retries, wherever they stand", () => {
+    const before = `export default defineConfig({
+  projects: [{ name: "slow", retries: 5 }, { name: "chromium" }],
+  retries: 0,
+});`;
+    const after = `export default defineConfig({
+  retries: 5,
+  projects: [{ name: "slow", retries: 0 }, { name: "chromium" }],
+});`;
+    expect(pw(before, after)).toMatchObject([
+      { kind: "retries-raised", message: "retries raised from 0 to 5" },
+    ]);
+  });
+
+  it("pairs projects by name, not by position", () => {
+    const before = `export default defineConfig({
+  projects: [{ name: "a", retries: 0 }, { name: "b", retries: 3 }],
+});`;
+    const reordered = `export default defineConfig({
+  projects: [{ name: "b", retries: 3 }, { name: "a", retries: 0 }],
+});`;
+    const swapped = `export default defineConfig({
+  projects: [{ name: "b", retries: 0 }, { name: "a", retries: 3 }],
+});`;
+    expect(pw(before, reordered)).toEqual([]);
+    expect(pw(before, swapped)).toMatchObject([
+      {
+        kind: "retries-raised",
+        message: 'retries raised from 0 to 3 for project "a"',
+        line: 2,
+      },
+    ]);
+  });
+
+  it("counts a project's retries as the top-level ones when it sets none", () => {
+    const before = `export default defineConfig({
+  retries: 4,
+  projects: [{ name: "a", retries: 0 }],
+});`;
+    const after = before.replace('{ name: "a", retries: 0 }', '{ name: "a" }');
+    expect(pw(before, after)).toMatchObject([
+      {
+        kind: "retries-raised",
+        message: 'retries raised from 0 to 4 for project "a"',
+      },
+    ]);
+  });
+
+  it("compares projects by position, and reports a reorder, when names are not literals or repeat", () => {
+    const before = `export default defineConfig({
+  projects: [{ name: A, retries: 0 }, { name: B, retries: 3 }],
+});`;
+    const after = `export default defineConfig({
+  projects: [{ name: B, retries: 0 }, { name: A, retries: 3 }],
+});`;
+    expect(pw(before, after)).toMatchObject([
+      {
+        kind: "config-changed",
+        message: expect.stringMatching(/reordered/) as string,
+      },
+    ]);
+    const twice = `export default defineConfig({
+  projects: [{ name: "a", retries: 0 }, { name: "a", retries: 0 }],
+});`;
+    expect(
+      pw(twice, twice.replace("retries: 0 }]", "retries: 2 }]")),
+    ).toMatchObject([
+      {
+        kind: "retries-raised",
+        message: "retries raised from 0 to 2 for project 2",
+      },
     ]);
   });
 

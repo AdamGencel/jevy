@@ -1,10 +1,15 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CacheMode } from "../config.js";
 import type { Answer, Decider, DecisionState, Question } from "../decider.js";
-import { CacheError, RedactionError } from "../errors.js";
+import {
+  CacheError,
+  DeciderError,
+  JevyError,
+  RedactionError,
+} from "../errors.js";
 import { hashSnapshot } from "../hash.js";
 import { rulesFingerprint } from "../project.js";
 import type { RedactRule } from "../redact.js";
@@ -15,7 +20,11 @@ import { JsonlDecisionStore } from "./jsonl-store.js";
 import { MemoryDecisionStore } from "./memory-store.js";
 import type { DecisionRecord } from "./record.js";
 import { createDecisionSession, createRunMemo } from "./session.js";
-import type { DecisionSessionOptions, RunMemo } from "./session.js";
+import type {
+  DecisionSessionOptions,
+  RunMemo,
+  RunMemoEntry,
+} from "./session.js";
 import type { DecisionStore } from "./store.js";
 
 const SPEC = "tests/checkout.spec.ts";
@@ -129,8 +138,9 @@ function storedRecord(
 ): DecisionRecord {
   const snapshotHash = hashSnapshot(snapshot, { redact });
   return {
-    v: 1,
+    v: 2,
     key: decisionKey({
+      spec: SPEC,
       question,
       snapshotHash,
       deciderId: "jev",
@@ -501,6 +511,109 @@ describe("createDecisionSession: re-gating a hit", () => {
   });
 });
 
+describe("createDecisionSession: the key is scoped to the spec", () => {
+  it("does not answer one spec's question from another spec's record", async () => {
+    const store = new MemoryDecisionStore();
+    await recordRun(store, [
+      { step: "s1", question: confirmed, state: state() },
+    ]);
+    const outcome = await session(store, "replay").decide({
+      spec: "tests/refund.spec.ts",
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    });
+    expect(outcome).toMatchObject({
+      verdict: "needs-review",
+      source: "none",
+      reason: "no-entry",
+    });
+  });
+
+  it("does not carry a person's review to the same question in another spec", async () => {
+    const store = new MemoryDecisionStore();
+    await store.append([
+      storedRecord(confirmed, page("Order confirmed"), {
+        reviewedBy: "adam",
+        reviewVerdict: "fail",
+      }),
+    ]);
+    const used = decider(answerFor);
+    const other = await session(store, "replay-or-query", {
+      decider: used,
+    }).decide({
+      spec: "tests/refund.spec.ts",
+      step: "toSatisfy#1",
+      question: confirmed,
+      state: state(),
+    });
+    expect(used.calls).toBe(1);
+    expect(other).toMatchObject({ verdict: "pass", source: "decider" });
+  });
+
+  it("refuses a stored record whose spec is not the one its key names", async () => {
+    const store = new MemoryDecisionStore();
+    await store.append([
+      storedRecord(confirmed, page("Order confirmed"), {
+        spec: "tests/refund.spec.ts",
+      }),
+    ]);
+    await expect(
+      session(store, "replay").decide({
+        spec: SPEC,
+        step: "toSatisfy#1",
+        question: confirmed,
+        state: state(),
+      }),
+    ).rejects.toThrow(CacheError);
+  });
+
+  it("misses a version 1 record cleanly with no-entry, and records beside it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "jevy-session-"));
+    try {
+      const current = storedRecord(confirmed, page("Order confirmed"), {});
+      const file = join(dir, `${SPEC}.jsonl`);
+      await mkdir(dirname(file), { recursive: true });
+      // What a version 1 cache held for this step: the same record under the
+      // key version 1 computed, which did not cover the spec.
+      await writeFile(
+        file,
+        `${JSON.stringify({ ...current, v: 1, key: `sha256:${"9".repeat(64)}` })}\n`,
+      );
+      const replay = await session(
+        new JsonlDecisionStore({ dir }),
+        "replay",
+      ).decide({
+        spec: SPEC,
+        step: "toSatisfy#1",
+        question: confirmed,
+        state: state(),
+      });
+      expect(replay).toMatchObject({
+        verdict: "needs-review",
+        source: "none",
+        reason: "no-entry",
+      });
+
+      await recordRun(new JsonlDecisionStore({ dir }), [
+        { step: "toSatisfy#1", question: confirmed, state: state() },
+      ]);
+      const hit = await session(
+        new JsonlDecisionStore({ dir }),
+        "replay",
+      ).decide({
+        spec: SPEC,
+        step: "toSatisfy#1",
+        question: confirmed,
+        state: state(),
+      });
+      expect(hit).toMatchObject({ source: "cache", verdict: "pass" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("createDecisionSession: querying", () => {
   it("queries on a miss in replay-or-query and holds the record until confirm", async () => {
     const store = new MemoryDecisionStore();
@@ -520,7 +633,7 @@ describe("createDecisionSession: querying", () => {
       answer: { value: "yes", confidence: 0.93, abstained: false },
     });
     expect(outcome.record).toEqual({
-      v: 1,
+      v: 2,
       key: outcome.key,
       spec: SPEC,
       step: "s1",
@@ -760,7 +873,171 @@ describe("createDecisionSession: run memo", () => {
       await retry.confirm();
     }
     expect(flipping.calls).toBe(1);
+    // The first retry passed on the remembered answer, so it held and wrote
+    // it. The second found that same record last in the store and wrote no
+    // duplicate line.
+    const written = await store.list();
+    expect(written).toHaveLength(1);
+    for (const record of written) {
+      expect(record).toMatchObject({ answer: "no", verdict: "fail" });
+    }
+  });
+
+  it("holds a record when a retry passes on a remembered answer, so confirm writes it", async () => {
+    const store = new MemoryDecisionStore();
+    const memo = createRunMemo();
+    const used = decider(answerFor);
+    const input = {
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    };
+    const attempt1 = session(store, "replay-or-query", { decider: used, memo });
+    const first = await attempt1.decide(input);
+    attempt1.discard();
+
+    const retry = session(store, "replay-or-query", { decider: used, memo });
+    const outcome = await retry.decide(input);
+    expect(used.calls).toBe(1);
+    expect(outcome).toMatchObject({
+      verdict: "pass",
+      source: "decider",
+      reason: "no-entry",
+    });
+    expect(outcome.record).toEqual(first.record);
     expect(await store.list()).toEqual([]);
+    await retry.confirm();
+    expect(await store.list()).toEqual([first.record]);
+
+    const replayed = await session(store, "replay").decide(input);
+    expect(replayed).toMatchObject({ source: "cache", verdict: "pass" });
+  });
+
+  it("builds the retry's record with the retry's clock and thresholds", async () => {
+    const memo = createRunMemo();
+    const used = decider({ value: "yes", confidence: 0.85 });
+    const input = {
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    };
+    const attempt1 = session(new MemoryDecisionStore(), "record", {
+      decider: used,
+      memo,
+    });
+    await attempt1.decide(input);
+    attempt1.discard();
+
+    const later = new Date("2026-11-18T11:00:00.000Z");
+    const strict: Thresholds = { pass: 0.9, fail: 0.5 };
+    const outcome = await session(new MemoryDecisionStore(), "record", {
+      decider: used,
+      memo,
+      thresholds: strict,
+      now: () => later,
+    }).decide(input);
+    expect(outcome.verdict).toBe("needs-review");
+    expect(outcome.record).toMatchObject({
+      answer: "yes",
+      confidence: 0.85,
+      verdict: "needs-review",
+      thresholds: strict,
+      createdAt: later.toISOString(),
+    });
+  });
+
+  it("uses the entry the memo kept when another process answered first", async () => {
+    const theirs: RunMemoEntry = {
+      answer: { value: "no", confidence: 0.95 },
+      truncated: false,
+    };
+    const sets: RunMemoEntry[] = [];
+    // A shared memo whose first writer was another worker: `set` loses the
+    // race, and `get` returns the earlier entry.
+    const shared: RunMemo = {
+      get: () => (sets.length === 0 ? undefined : theirs),
+      set: (_key, entry) => {
+        sets.push(entry);
+      },
+    };
+    const store = new MemoryDecisionStore();
+    const used = decider({ value: "yes", confidence: 0.95 });
+    const query = session(store, "record", { decider: used, memo: shared });
+    const outcome = await query.decide({
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    });
+    expect(used.calls).toBe(1);
+    expect(sets).toHaveLength(1);
+    expect(outcome).toMatchObject({
+      verdict: "fail",
+      source: "decider",
+      answer: { value: "no", confidence: 0.95, abstained: false },
+    });
+    expect(outcome.record).toMatchObject({ answer: "no", verdict: "fail" });
+    await query.confirm();
+    expect(await store.list()).toEqual([outcome.record]);
+  });
+
+  it("gives two concurrent attempts on one memo the first answer", async () => {
+    const memo = createRunMemo();
+    let draw = 0;
+    const flipping = decider(() => {
+      draw += 1;
+      return draw === 1
+        ? { value: "no", confidence: 0.95 }
+        : { value: "yes", confidence: 0.95 };
+    });
+    const input = {
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    };
+    const [a, b] = await Promise.all([
+      session(new MemoryDecisionStore(), "record", {
+        decider: flipping,
+        memo,
+      }).decide(input),
+      session(new MemoryDecisionStore(), "record", {
+        decider: flipping,
+        memo,
+      }).decide(input),
+    ]);
+    expect(flipping.calls).toBe(2);
+    expect(a.answer).toEqual(b.answer);
+    expect(a.record?.answer).toBe(b.record?.answer);
+  });
+
+  it("redacts an entry a shared memo returns before it is used or held", async () => {
+    const theirs: RunMemoEntry = {
+      answer: {
+        value: "page shows alice@example.com only",
+        confidence: 0.4,
+        abstained: true,
+      },
+      truncated: false,
+    };
+    const shared: RunMemo = { get: () => theirs, set: () => undefined };
+    const store = new MemoryDecisionStore();
+    const query = session(store, "record", {
+      decider: decider(answerFor),
+      memo: shared,
+    });
+    const outcome = await query.decide({
+      spec: SPEC,
+      step: "s1",
+      question: confirmed,
+      state: state(),
+    });
+    await query.confirm();
+    expect(outcome.verdict).toBe("needs-review");
+    expect(JSON.stringify(outcome)).not.toContain("alice@");
+    expect(JSON.stringify(await store.list())).not.toContain("alice@");
   });
 
   it("does not share answers across different keys", async () => {
@@ -787,7 +1064,7 @@ describe("createDecisionSession: run memo", () => {
 });
 
 describe("createDecisionSession: redaction before write", () => {
-  it("redacts secrets in the spec, step, question and answer", async () => {
+  it("redacts secrets in the step, question and answer", async () => {
     const store = new MemoryDecisionStore();
     const query = session(store, "record", {
       decider: decider({
@@ -798,7 +1075,7 @@ describe("createDecisionSession: redaction before write", () => {
       snapshot: { redact: [/ACCT-\d+/] },
     });
     await query.decide({
-      spec: "tests/ACCT-77.spec.ts",
+      spec: SPEC,
       step: "check bob@example.com",
       question: {
         kind: "yesno",
@@ -809,10 +1086,10 @@ describe("createDecisionSession: redaction before write", () => {
     await query.confirm();
     const [record] = await store.list();
     const written = JSON.stringify(record);
-    for (const secret of ["ACCT-77", "ACCT-991", "bob@", "carol@", "alice@"]) {
+    for (const secret of ["ACCT-991", "bob@", "carol@", "alice@"]) {
       expect(written).not.toContain(secret);
     }
-    expect(record?.spec).toBe("tests/[REDACTED].spec.ts");
+    expect(record?.spec).toBe(SPEC);
     expect(record?.step).toContain("[REDACTED]");
     expect(record?.question).toContain("[REDACTED]");
   });
@@ -1034,5 +1311,333 @@ describe("createDecisionSession: confirm while deciding", () => {
     expect((await inner.list()).map((r) => r.step)).toEqual(["s1"]);
     await query.confirm();
     expect((await inner.list()).map((r) => r.step)).toEqual(["s1", "s2"]);
+  });
+});
+
+describe("createDecisionSession: a decider that fails", () => {
+  function failing(error: Error): CountingDecider {
+    const counting: CountingDecider = {
+      id: "jev",
+      model: "jev-1.14.0",
+      calls: 0,
+      decide() {
+        counting.calls += 1;
+        return Promise.reject(error);
+      },
+    };
+    return counting;
+  }
+
+  const input = { spec: SPEC, step: "s1", question: confirmed, state: state() };
+
+  it("rejects with the DeciderError and memoises and holds nothing", async () => {
+    const store = new MemoryDecisionStore();
+    const memo = createRunMemo();
+    const thrown = new DeciderError(
+      "The decider kept returning invalid output",
+    );
+    const used = failing(thrown);
+    const query = session(store, "record", { decider: used, memo });
+    await expect(query.decide(input)).rejects.toBe(thrown);
+    expect(thrown).toBeInstanceOf(JevyError);
+
+    const key = decisionKey({
+      spec: SPEC,
+      question: confirmed,
+      snapshotHash: hashSnapshot(page("Order confirmed")),
+      deciderId: "jev",
+      model: "jev-1.14.0",
+    });
+    expect(memo.get(key)).toBeUndefined();
+    await query.confirm();
+    expect(await store.list()).toEqual([]);
+
+    await expect(query.decide(input)).rejects.toBe(thrown);
+    expect(used.calls).toBe(2);
+  });
+
+  it("lets other errors through unchanged, also with nothing memoised or held", async () => {
+    const store = new MemoryDecisionStore();
+    const memo = createRunMemo();
+    const thrown = new Error("socket hang up");
+    const used = failing(thrown);
+    const query = session(store, "record", { decider: used, memo });
+    await expect(query.decide(input)).rejects.toBe(thrown);
+    await query.confirm();
+    expect(await store.list()).toEqual([]);
+
+    const next = session(store, "record", {
+      decider: decider(answerFor),
+      memo,
+    });
+    expect(await next.decide(input)).toMatchObject({ source: "decider" });
+  });
+});
+
+/** A store that counts every call, to show a refusal touched nothing. */
+function countingStore(inner: DecisionStore = new MemoryDecisionStore()): {
+  readonly store: DecisionStore;
+  readonly calls: () => number;
+} {
+  let calls = 0;
+  const count = <T>(result: T): T => {
+    calls += 1;
+    return result;
+  };
+  return {
+    store: {
+      latest: (key) => count(inner.latest(key)),
+      forStep: (spec, step) => count(inner.forStep(spec, step)),
+      list: (spec) => count(inner.list(spec)),
+      append: (records) => count(inner.append(records)),
+    },
+    calls: () => calls,
+  };
+}
+
+describe("createDecisionSession: a spec that redaction would change", () => {
+  it.each([
+    ["tests/alice@example.com.spec.ts", []],
+    ["tests/ORDER-1.spec.ts", [/ORDER-\d+/]],
+    ["tests/a  b.spec.ts", []],
+    ["tests/ﬁle.spec.ts", []],
+  ] as const)(
+    "refuses %s before any decider call, memo access or store access",
+    async (spec, redact) => {
+      const counted = countingStore();
+      const used = decider(answerFor);
+      let memoCalls = 0;
+      const memo: RunMemo = {
+        get: () => {
+          memoCalls += 1;
+          return undefined;
+        },
+        set: () => {
+          memoCalls += 1;
+        },
+      };
+      for (const mode of ["replay", "replay-or-query", "record"] as const) {
+        const query = session(counted.store, mode, {
+          decider: used,
+          memo,
+          snapshot: { redact },
+        });
+        await expect(
+          query.decide({
+            spec,
+            step: "s1",
+            question: confirmed,
+            state: state(),
+          }),
+        ).rejects.toThrow(/rename the spec file/i);
+        await query.confirm();
+      }
+      expect(used.calls).toBe(0);
+      expect(memoCalls).toBe(0);
+      expect(counted.calls()).toBe(0);
+    },
+  );
+
+  it("does not replay one spec's review for another spec that redacts alike", async () => {
+    const store = new MemoryDecisionStore();
+    await expect(
+      session(store, "record", { decider: decider(answerFor) }).decide({
+        spec: "tests/alice@example.com.spec.ts",
+        step: "s1",
+        question: confirmed,
+        state: state(),
+      }),
+    ).rejects.toThrow(CacheError);
+    await expect(
+      session(store, "replay").decide({
+        spec: "tests/bob@example.org.spec.ts",
+        step: "s1",
+        question: confirmed,
+        state: state(),
+      }),
+    ).rejects.toThrow(CacheError);
+    expect(await store.list()).toEqual([]);
+  });
+});
+
+describe("createDecisionSession: one record per key in a session", () => {
+  function flipping(): CountingDecider {
+    let draw = 0;
+    return decider(() => {
+      draw += 1;
+      return draw === 1
+        ? { value: "yes", confidence: 0.9 }
+        : { value: "no", confidence: 0.9 };
+    });
+  }
+
+  const at = (step: string) => ({
+    spec: SPEC,
+    step,
+    question: confirmed,
+    state: state(),
+  });
+
+  it("asks once and holds one record when two steps ask one key at once", async () => {
+    const store = new MemoryDecisionStore();
+    const used = flipping();
+    const query = session(store, "replay-or-query", { decider: used });
+    const [first, second] = await Promise.all([
+      query.decide(at("toSatisfy#1")),
+      query.decide(at("toSatisfy#2")),
+    ]);
+    expect(used.calls).toBe(1);
+    expect(second.answer).toEqual(first.answer);
+    expect(second.record).toBe(first.record);
+    await query.confirm();
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("asks once when the memo does not keep what was set", async () => {
+    const store = new MemoryDecisionStore();
+    const used = flipping();
+    const forgetful: RunMemo = { get: () => undefined, set: () => undefined };
+    const query = session(store, "replay-or-query", {
+      decider: used,
+      memo: forgetful,
+    });
+    const first = await query.decide(at("toSatisfy#1"));
+    const second = await query.decide(at("toSatisfy#2"));
+    expect(used.calls).toBe(1);
+    expect(second.verdict).toBe(first.verdict);
+    await query.confirm();
+    expect((await store.list()).map((r) => r.answer)).toEqual(["yes"]);
+  });
+
+  it("names the step that first asked the key on a later step's record", async () => {
+    const query = session(new MemoryDecisionStore(), "record", {
+      decider: decider(answerFor),
+    });
+    const first = await query.decide(at("toSatisfy#1"));
+    const second = await query.decide(at("toSatisfy#2"));
+    expect(second.record).toBe(first.record);
+    expect(second.record?.step).toBe("toSatisfy#1");
+  });
+
+  it("writes no second line when record mode asks a key again after confirm", async () => {
+    const store = new MemoryDecisionStore();
+    const used = decider(answerFor);
+    const memo = createRunMemo();
+    const query = session(store, "record", { decider: used, memo });
+    await query.decide(at("toSatisfy#1"));
+    await query.confirm();
+    const again = await query.decide(at("toSatisfy#2"));
+    await query.confirm();
+    expect(used.calls).toBe(1);
+    expect(await store.list()).toHaveLength(1);
+    expect(again.record).toEqual((await store.list())[0]);
+
+    // A later test that shares the memo asks the same key.
+    const later = session(store, "record", { decider: used, memo });
+    await later.decide(at("toSatisfy#1"));
+    await later.confirm();
+    expect(used.calls).toBe(1);
+    expect(await store.list()).toHaveLength(1);
+  });
+
+  it("asks once after confirm when the memo does not keep what was set", async () => {
+    const store = new MemoryDecisionStore();
+    const used = flipping();
+    const forgetful: RunMemo = { get: () => undefined, set: () => undefined };
+    const query = session(store, "record", { decider: used, memo: forgetful });
+    await query.decide(at("toSatisfy#1"));
+    await query.confirm();
+    await query.decide(at("toSatisfy#2"));
+    await query.confirm();
+    expect(used.calls).toBe(1);
+    expect((await store.list()).map((r) => r.answer)).toEqual(["yes"]);
+  });
+
+  it("holds nothing in record mode when the store's last record for the key is the same answer", async () => {
+    const store = new MemoryDecisionStore();
+    await recordRun(store, [
+      { step: "toSatisfy#1", question: confirmed, state: state() },
+    ]);
+    const used = decider(answerFor);
+    const recorder = session(store, "record", {
+      decider: used,
+      now: () => new Date("2026-11-20T00:00:00.000Z"),
+    });
+    const outcome = await recorder.decide(at("toSatisfy#1"));
+    await recorder.confirm();
+    expect(used.calls).toBe(1);
+    expect(outcome.source).toBe("decider");
+    expect(await store.list()).toHaveLength(1);
+    expect(outcome.record).toEqual((await store.list())[0]);
+  });
+});
+
+describe("createDecisionSession: a malformed run memo entry", () => {
+  it.each([
+    ["no answer", { truncated: false }],
+    ["an answer that is not an object", { answer: "yes", truncated: false }],
+    ["a missing truncated flag", { answer: { value: "yes", confidence: 0.9 } }],
+    [
+      "a truncated flag that is not a boolean",
+      { answer: { value: "no", confidence: 0.9 }, truncated: "yes" },
+    ],
+    [
+      "a value the question does not allow",
+      { answer: { value: "maybe", confidence: 0.9 }, truncated: false },
+    ],
+    [
+      "a confidence above 1",
+      { answer: { value: "yes", confidence: 2 }, truncated: false },
+    ],
+    [
+      "an abstained flag that is not a boolean",
+      {
+        answer: { value: "yes", confidence: 0.9, abstained: "true" },
+        truncated: false,
+      },
+    ],
+    ["a number", 42],
+  ])("refuses %s with a CacheError", async (_label, entry) => {
+    for (const afterSet of [false, true]) {
+      let gets = 0;
+      // Typed as the memo contract but returning what a broken shared memo
+      // might: the session must not trust the shape.
+      const memo = {
+        get: () => {
+          gets += 1;
+          return afterSet && gets === 1 ? undefined : entry;
+        },
+        set: () => undefined,
+      } as unknown as RunMemo;
+      const store = new MemoryDecisionStore();
+      const query = session(store, "record", {
+        decider: decider(answerFor),
+        memo,
+      });
+      await expect(
+        query.decide({
+          spec: SPEC,
+          step: "s1",
+          question: confirmed,
+          state: state(),
+        }),
+      ).rejects.toThrow(CacheError);
+      await query.confirm();
+      expect(await store.list()).toEqual([]);
+    }
+  });
+
+  it("treats null from the memo as no entry", async () => {
+    const memo = {
+      get: () => null,
+      set: () => undefined,
+    } as unknown as RunMemo;
+    const used = decider(answerFor);
+    const outcome = await session(new MemoryDecisionStore(), "record", {
+      decider: used,
+      memo,
+    }).decide({ spec: SPEC, step: "s1", question: confirmed, state: state() });
+    expect(used.calls).toBe(1);
+    expect(outcome).toMatchObject({ source: "decider", verdict: "pass" });
   });
 });

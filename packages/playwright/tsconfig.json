@@ -5,7 +5,8 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
     "paths": {
-      "@jevyjs/core": ["../core/src/index.ts"]
+      "@jevyjs/core": ["../core/src/index.ts"],
+      "@jevyjs/deciders-llm": ["../deciders-llm/src/index.ts"]
     }
   },
   "include": ["src"]

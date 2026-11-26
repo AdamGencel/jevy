@@ -18,6 +18,7 @@ import {
   memoryReader,
   openGitRepo,
   parseNameStatus,
+  parseRawDiff,
   treeHasBlob,
 } from "./git.js";
 
@@ -74,6 +75,72 @@ describe("parseNameStatus", () => {
 
   it("reads empty output as no changes", () => {
     expect(parseNameStatus("")).toEqual([]);
+  });
+});
+
+describe("parseRawDiff", () => {
+  const Z = "0".repeat(40);
+  const A = "a".repeat(40);
+
+  it("reads NUL-separated raw output like name-status, and marks gitlinks by side", () => {
+    const output = [
+      `:100644 100644 ${A} ${Z} M`,
+      "src/a.spec.ts",
+      `:100644 100644 ${A} ${A} R087`,
+      "old.spec.ts",
+      "new.spec.ts",
+      `:100644 100644 ${A} ${A} C100`,
+      "src/a.spec.ts",
+      "src/copy.spec.ts",
+      `:000000 160000 ${Z} ${A} A`,
+      "e2e/app",
+      `:160000 160000 ${A} ${Z} M`,
+      "e2e/bumped",
+      `:160000 000000 ${A} ${Z} D`,
+      "e2e/gone",
+      `:100644 160000 ${A} ${A} T`,
+      "e2e/was-a-file",
+      `:120000 100644 ${A} ${A} T`,
+      "tab\there.spec.ts",
+      "",
+    ].join("\u0000");
+    expect(parseRawDiff(output)).toEqual([
+      { status: "modified", path: "src/a.spec.ts", oldPath: "src/a.spec.ts" },
+      { status: "renamed", path: "new.spec.ts", oldPath: "old.spec.ts" },
+      {
+        status: "added",
+        path: "src/copy.spec.ts",
+        oldPath: "src/copy.spec.ts",
+      },
+      { status: "added", path: "e2e/app", oldPath: "e2e/app", gitlink: "head" },
+      {
+        status: "modified",
+        path: "e2e/bumped",
+        oldPath: "e2e/bumped",
+        gitlink: "both",
+      },
+      {
+        status: "deleted",
+        path: "e2e/gone",
+        oldPath: "e2e/gone",
+        gitlink: "base",
+      },
+      {
+        status: "modified",
+        path: "e2e/was-a-file",
+        oldPath: "e2e/was-a-file",
+        gitlink: "head",
+      },
+      {
+        status: "modified",
+        path: "tab\there.spec.ts",
+        oldPath: "tab\there.spec.ts",
+      },
+    ]);
+  });
+
+  it("reads empty output as no changes", () => {
+    expect(parseRawDiff("")).toEqual([]);
   });
 });
 

@@ -1,4 +1,15 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -252,3 +263,81 @@ describe("the record of where a session started", () => {
     });
   });
 });
+
+describe.runIf(process.platform !== "win32")(
+  "the state files on disk, with something else in their place",
+  () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "jevy-hook-odd-")));
+    afterAll(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    /*
+     * A plain read or write of a FIFO waits for the other end in one of
+     * Node's worker threads, and `process.exit` waits for that thread. The
+     * hook would answer and then not end, and Claude Code lets the agent
+     * stop when it cancels a hook. So each of these must answer at once.
+     */
+
+    it("refuses to read a FIFO, at once", async () => {
+      const files = realStateFiles(dir);
+      const path = join(dir, "fifo-read.json");
+      execFileSync("mkfifo", [path]);
+      const started = Date.now();
+      await expect(files.read(path)).rejects.toThrow(
+        `${path} is a FIFO, not a regular file`,
+      );
+      expect(await loadState(files, path)).toBe("unusable");
+      expect(await loadStart(files, path)).toMatchObject({ kind: "unusable" });
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("replaces a FIFO with the file it writes, at once", async () => {
+      const files = realStateFiles(dir);
+      const path = join(dir, "fifo-write.json");
+      execFileSync("mkfifo", [path]);
+      const started = Date.now();
+      const state: StopState = { blocks: 1, same: 1, signature: "A" };
+      expect(await saveState(files, path, state)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(lstatSync(path).isFile()).toBe(true);
+      expect(lstatSync(path).mode & 0o777).toBe(0o600);
+      expect(await loadState(files, path)).toEqual(state);
+      // No temporary file is left beside it.
+      expect(
+        readdirSync(dir).filter((name) => name.includes("fifo-write")),
+      ).toEqual(["fifo-write.json"]);
+    });
+
+    it("does not create over a FIFO, and does not wait on it", async () => {
+      const files = realStateFiles(dir);
+      const path = join(dir, "fifo-create.json");
+      execFileSync("mkfifo", [path]);
+      const started = Date.now();
+      expect(await files.create(path, "x")).toBe(false);
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("refuses to read through a symlink, and writes over the link, not its target", async () => {
+      const files = realStateFiles(dir);
+      const target = join(dir, "target.txt");
+      const path = join(dir, "link.json");
+      writeFileSync(target, "keep\n");
+      symlinkSync(target, path);
+      await expect(files.read(path)).rejects.toThrow();
+      await files.write(path, "new\n");
+      expect(readFileSync(target, "utf8")).toBe("keep\n");
+      expect(lstatSync(path).isFile()).toBe(true);
+      expect(await files.read(path)).toBe("new\n");
+    });
+
+    it("refuses a directory in the place of the file", async () => {
+      const files = realStateFiles(dir);
+      const path = join(dir, "dir.json");
+      mkdirSync(path);
+      await expect(files.read(path)).rejects.toThrow(
+        `${path} is a directory, not a regular file`,
+      );
+    });
+  },
+);

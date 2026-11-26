@@ -103,6 +103,7 @@ describe("snapshot validation", () => {
     "autocomplete",
     "haspopup",
     "orientation",
+    "url",
   ] as const;
 
   for (const field of STRING_FIELDS) {

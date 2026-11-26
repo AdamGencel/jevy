@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SnapshotError } from "./errors.js";
+import { RedactionError, SnapshotError } from "./errors.js";
 import { hashSnapshot } from "./hash.js";
 import type { AccessibilityNode } from "./snapshot.js";
 
@@ -164,5 +164,48 @@ describe("snapshot hash", () => {
     expect(
       hashSnapshot(left, { normalise: { disable: ["timestamp"] } }),
     ).not.toBe(hashSnapshot(right, { normalise: { disable: ["timestamp"] } }));
+  });
+});
+
+describe("a link's URL in the hash", () => {
+  const nav = (url: string): AccessibilityNode => ({
+    role: "navigation",
+    children: [{ role: "link", name: "Pay", url }],
+  });
+
+  it("gives a link that points somewhere new a new hash", () => {
+    expect(hashSnapshot(nav("/pay"))).not.toBe(hashSnapshot(nav("/refund")));
+    expect(hashSnapshot(nav("/pay"))).not.toBe(
+      hashSnapshot({
+        role: "navigation",
+        children: [{ role: "link", name: "Pay" }],
+      }),
+    );
+  });
+
+  it("ignores the query string, the fragment and credentials", () => {
+    const hash = hashSnapshot(nav("https://shop.example/pay"));
+    expect(hashSnapshot(nav("https://shop.example/pay?session=1#a"))).toBe(
+      hash,
+    );
+    expect(hashSnapshot(nav("https://ada:pw@shop.example/pay?session=2"))).toBe(
+      hash,
+    );
+  });
+
+  it("gives two script links the same hash", () => {
+    expect(hashSnapshot(nav("javascript:void(0)"))).toBe(
+      hashSnapshot(nav("javascript:openCart()")),
+    );
+  });
+
+  it("fails closed when a project placeholder puts a secret in a URL", () => {
+    expect(() =>
+      hashSnapshot(nav("/pay"), {
+        normalise: {
+          replace: [{ pattern: /pay/, placeholder: "ada@example.com" }],
+        },
+      }),
+    ).toThrow(RedactionError);
   });
 });

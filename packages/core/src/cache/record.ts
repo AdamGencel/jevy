@@ -17,7 +17,7 @@ export type DecisionKind = "yesno" | "choice" | "score";
  * decision on a `needs-review` answer, which a replay returns as is.
  */
 export interface DecisionRecord {
-  readonly v: 1;
+  readonly v: 2;
   readonly key: string;
   readonly spec: string;
   readonly step: string;
@@ -38,7 +38,48 @@ export interface DecisionRecord {
   readonly reviewVerdict: "pass" | "fail" | null;
 }
 
-export const DECISION_RECORD_VERSION = 1;
+/**
+ * Moves with `DECISION_KEY_VERSION`: a record's version says which key
+ * version computed its `key`. 2: keys that cover the spec.
+ */
+export const DECISION_RECORD_VERSION = 2;
+
+/**
+ * Versions an older Jevy wrote, with the fields each one allowed. Their keys
+ * came from an older key version, so no key computed today can find them; a
+ * store skips them, and the step misses with `no-entry` and is asked again.
+ *
+ * A skipped line is still checked against its version's field list, so a
+ * committed cache cannot carry page text in an old-looking line that a
+ * current line would refuse. The list is version 1's as released, kept here
+ * on its own so a later change to `FIELDS` cannot widen it.
+ */
+const SUPERSEDED_FIELDS: ReadonlyMap<unknown, readonly string[]> = new Map([
+  [
+    1,
+    [
+      "v",
+      "key",
+      "spec",
+      "step",
+      "kind",
+      "question",
+      "snapshotHash",
+      "decider",
+      "model",
+      "answer",
+      "confidence",
+      "abstained",
+      "truncated",
+      "verdict",
+      "thresholds",
+      "rules",
+      "createdAt",
+      "reviewedBy",
+      "reviewVerdict",
+    ],
+  ],
+]);
 
 const FIELDS: readonly (keyof DecisionRecord)[] = [
   "v",
@@ -83,24 +124,42 @@ export function serialiseRecord(record: DecisionRecord): string {
  * exactly is not trusted for replay.
  */
 export function parseRecord(line: string): DecisionRecord {
-  let value: unknown;
+  return checkRecord(parseJson(line));
+}
+
+/**
+ * `parseRecord` for a line read from a cache file: a record of a superseded
+ * version is undefined rather than an error, so a cache written before a key
+ * change still loads and its steps miss cleanly. Its field names are checked
+ * against that version's list, and an unknown one throws, as for a current
+ * record; its values are not, because it is never replayed. Any other
+ * problem still throws.
+ */
+export function readRecordLine(line: string): DecisionRecord | undefined {
+  const value = parseJson(line);
+  if (isRecord(value)) {
+    const fields = SUPERSEDED_FIELDS.get(value["v"]);
+    if (fields !== undefined) {
+      assertKnownFields(value, fields);
+      return undefined;
+    }
+  }
+  return checkRecord(value);
+}
+
+function parseJson(line: string): unknown {
   try {
-    value = JSON.parse(line);
+    return JSON.parse(line) as unknown;
   } catch {
     throw new CacheError("Decision record is not valid JSON");
   }
-  return checkRecord(value);
 }
 
 function checkRecord(value: unknown): DecisionRecord {
   if (!isRecord(value)) {
     throw new CacheError("Decision record must be a JSON object");
   }
-  for (const name of Object.keys(value)) {
-    if (!(FIELDS as readonly string[]).includes(name)) {
-      throw new CacheError(`Decision record has an unknown field "${name}"`);
-    }
-  }
+  assertKnownFields(value, FIELDS);
   if (value["v"] !== DECISION_RECORD_VERSION) {
     throw new CacheError(
       `Decision record v must be ${String(DECISION_RECORD_VERSION)}`,
@@ -136,6 +195,17 @@ function checkRecord(value: unknown): DecisionRecord {
     reviewedBy,
     reviewVerdict,
   };
+}
+
+function assertKnownFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+): void {
+  for (const name of Object.keys(value)) {
+    if (!fields.includes(name)) {
+      throw new CacheError(`Decision record has an unknown field "${name}"`);
+    }
+  }
 }
 
 function readText(value: Record<string, unknown>, field: string): string {

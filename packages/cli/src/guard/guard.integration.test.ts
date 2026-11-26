@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -7,6 +8,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,7 +28,10 @@ import type { GuardReport } from "./types.js";
  */
 const REAL_GIT = { timeout: 60_000 };
 
-const SPEC = `import { test, expect } from "@playwright/test";
+// Jevy's own test and expect: only `@jevyjs/playwright`'s toSatisfy is
+// advisory. Changed on purpose from `@playwright/test`, whose expect has no
+// toSatisfy and throws on it.
+const SPEC = `import { test, expect } from "@jevyjs/playwright";
 
 test.describe("checkout", () => {
   test("pays by card", async ({ page }) => {
@@ -130,14 +135,17 @@ describe("jevy guard against a real repository", REAL_GIT, () => {
       expect(result.code).toBe(1);
       const found = report(result.stdout);
       // The config is a protected path, so changing it is a finding of its
-      // own next to what changed inside it.
-      expect(found.summary).toEqual({ weakening: 5, review: 0, info: 0 });
+      // own next to what changed inside it. Changed on purpose: review was
+      // 0. The changed test is left with toSatisfy alone, and the config
+      // does not make toSatisfy blocking.
+      expect(found.summary).toEqual({ weakening: 5, review: 1, info: 0 });
       expect(found.findings.map((f) => [f.file, f.kind])).toEqual([
         [".jevy/decisions/tests/new.spec.ts.jsonl", "approval-added"],
         ["jevy.config.ts", "protected-path-changed"],
         ["jevy.config.ts", "threshold-lowered"],
         ["tests/checkout.spec.ts", "assertion-removed"],
         ["tests/checkout.spec.ts", "skip-added"],
+        ["tests/checkout.spec.ts", "only-advisory-assertions"],
       ]);
 
       const never = await guard(
@@ -1053,6 +1061,276 @@ describe(
           ["web/Jevy.Config.ts", "protected-path-changed"],
           ["web/Jevy.Config.ts", "threshold-lowered"],
         ]);
+      });
+    });
+
+    describe("a short commit id, or a commit replaced", () => {
+      /** `main` holds TEST; `work` weakens it one commit later. */
+      function twoCommits(): Scratch & { readonly first: string } {
+        const repo = scratch({ "tests/a.spec.ts": TEST });
+        const first = repo.git("rev-parse", "HEAD").trim();
+        repo.git("checkout", "-q", "-b", "work");
+        repo.write("tests/a.spec.ts", WEAK);
+        repo.git("commit", "-q", "-am", "weaken");
+        return { ...repo, first };
+      }
+
+      it("exits 2 when a branch takes the name of a short commit id, naming both", async () => {
+        const repo = twoCommits();
+        const short = repo.first.slice(0, 12);
+        repo.git("branch", short, "work");
+        const result = await repo.guard("--base", short, "--head", "HEAD");
+        expect(result.code).toBe(2);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toMatch(/^jevy guard: .*ambiguous/);
+        expect(result.stderr).toContain(`refs/heads/${short}`);
+        expect(result.stderr).toContain(repo.first);
+        // A shorter id that no ref takes still names the commit.
+        const other = await repo.guard(
+          "--base",
+          repo.first.slice(0, 10),
+          "--head",
+          "HEAD",
+        );
+        expect(other.code).toBe(1);
+      });
+
+      it("runs when a branch named like a short id points at that very commit", async () => {
+        const repo = twoCommits();
+        const short = repo.first.slice(0, 8);
+        repo.git("branch", short, repo.first);
+        expect(
+          kinds(await repo.guard("--base", short, "--head", "work", "--json")),
+        ).toEqual(REMOVED);
+      });
+
+      it("compares the commits themselves, not their git replace stand-ins", async () => {
+        const repo = twoCommits();
+        const weak = repo.git("rev-parse", "work").trim();
+        repo.git("replace", repo.first, weak);
+        expect(repo.git("show", "main:tests/a.spec.ts")).toBe(WEAK);
+        const result = await repo.guard(
+          "--base",
+          "main",
+          "--head",
+          "work",
+          "--json",
+        );
+        expect(kinds(result)).toEqual(REMOVED);
+      });
+    });
+
+    describe("programs the repository configures for git", () => {
+      const noShell = process.platform === "win32";
+
+      /** A shell script that appends to `marker` each time it runs. */
+      function script(marker: string, body: string): string {
+        const path = join(tempDir(), "program.sh");
+        writeFileSync(path, `#!/bin/sh\necho ran >> "${marker}"\n${body}\n`);
+        chmodSync(path, 0o755);
+        return path;
+      }
+
+      it.skipIf(noShell)(
+        "runs no fsmonitor program and sees the edit it would hide (needs sh)",
+        async () => {
+          const repo = scratch({ "tests/a.spec.ts": TEST });
+          const marker = join(tempDir(), "ran");
+          repo.git(
+            "config",
+            "core.fsmonitor",
+            script(marker, "printf 'token\\0'"),
+          );
+          repo.git("status");
+          repo.git("status");
+          repo.write("tests/a.spec.ts", WEAK);
+          expect(repo.git("status", "--porcelain")).toBe("");
+          rmSync(marker, { force: true });
+          const result = await repo.guard("--base", "main", "--json");
+          expect(kinds(result)).toEqual(REMOVED);
+          expect(existsSync(marker)).toBe(false);
+        },
+        30_000,
+      );
+
+      it.skipIf(noShell)(
+        "runs no clean filter and sees the edit it would hide (needs sh)",
+        async () => {
+          const repo = scratch({ "tests/a.spec.ts": TEST });
+          const marker = join(tempDir(), "ran");
+          repo.write(".git/info/attributes", "*.spec.ts filter=hide\n");
+          repo.git(
+            "config",
+            "filter.hide.clean",
+            `${script(marker, 'cat >/dev/null\ngit show HEAD:"$1"')} %f`,
+          );
+          repo.git("config", "filter.hide.required", "true");
+          repo.write("tests/a.spec.ts", WEAK);
+          expect(repo.git("diff", "--name-only", "main")).toBe("");
+          rmSync(marker, { force: true });
+          const result = await repo.guard("--base", "main", "--json");
+          expect(kinds(result)).toEqual(REMOVED);
+          expect(existsSync(marker)).toBe(false);
+        },
+        30_000,
+      );
+
+      it("sees an edit hidden by a forged timestamp", async () => {
+        // Same length as TEST, one assertion fewer.
+        const commented = TEST.replace(
+          "  expect(count).toBe(2);",
+          "  //pect(count).toBe(2);",
+        );
+        expect(commented.length).toBe(TEST.length);
+        const repo = scratch({ "tests/a.spec.ts": TEST });
+        repo.git("config", "core.trustctime", "false");
+        const file = join(repo.dir, "tests/a.spec.ts");
+        const then = new Date("2001-01-01T00:00:00Z");
+        utimesSync(file, then, then);
+        repo.git("update-index", "--refresh");
+        writeFileSync(file, commented);
+        utimesSync(file, then, then);
+        expect(repo.git("status", "--porcelain")).toBe("");
+        const result = await repo.guard("--base", "main", "--json");
+        expect(kinds(result)).toEqual(REMOVED);
+      });
+    });
+
+    describe("a value the config imports from another file", () => {
+      it("protects the imported file", async () => {
+        const repo = scratch({
+          "thresholds.ts": "export const PASS = 0.8;\n",
+          "jevy.config.ts": `import { defineConfig } from "@jevyjs/core";
+import { PASS } from "./thresholds.ts";
+export default defineConfig({ thresholds: { pass: PASS, fail: 0.5 } });
+`,
+        });
+        repo.write("thresholds.ts", "export const PASS = 0.1;\n");
+        const result = await repo.guard("--base", "main", "--json");
+        expect(result.code).toBe(1);
+        expect(kinds(result)).toEqual([
+          ["thresholds.ts", "protected-path-changed"],
+        ]);
+        expect(report(result.stdout).findings[0]?.message).toContain(
+          "imported by the Jevy config",
+        );
+      });
+    });
+
+    describe("a submodule under a test glob", () => {
+      const CONFIG_E2E = 'export default { guard: { tests: ["e2e/**"] } };\n';
+
+      it("reports an added, bumped or removed submodule for review and compares nothing in it", async () => {
+        const app = scratch({ "x.txt": "1\n" });
+        const pinned = app.git("rev-parse", "HEAD").trim();
+        app.write("x.txt", "2\n");
+        app.git("commit", "-q", "-am", "two");
+        const repo = scratch({
+          "jevy.config.ts": CONFIG_E2E,
+          "e2e/a.spec.ts": TEST,
+        });
+        repo.git(
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          "-q",
+          app.dir,
+          "e2e/fixtures/app",
+        );
+        repo.git("-C", "e2e/fixtures/app", "checkout", "-q", pinned);
+        repo.git("add", "-A");
+        repo.git("commit", "-q", "-m", "add the app");
+        const SUBMODULE = [["e2e/fixtures/app", "submodule-changed"]];
+
+        const added = await repo.guard(
+          "--base",
+          "main~1",
+          "--head",
+          "main",
+          "--json",
+        );
+        expect(added.code).toBe(0);
+        expect(kinds(added)).toEqual(SUBMODULE);
+
+        repo.git("-C", "e2e/fixtures/app", "checkout", "-q", "main");
+        const bumped = await repo.guard("--base", "main", "--json");
+        expect(bumped.code).toBe(0);
+        expect(kinds(bumped)).toEqual(SUBMODULE);
+
+        repo.git("commit", "-q", "-am", "bump");
+        expect(
+          kinds(
+            await repo.guard("--base", "main~1", "--head", "main", "--json"),
+          ),
+        ).toEqual(SUBMODULE);
+
+        repo.git("rm", "-q", "e2e/fixtures/app");
+        expect(kinds(await repo.guard("--base", "main", "--json"))).toEqual(
+          SUBMODULE,
+        );
+      });
+    });
+
+    describe("configs the loader would not read first", () => {
+      it("runs with an ignored jevy.config.js beside a tracked jevy.config.ts", async () => {
+        const repo = scratch({
+          ".gitignore": "*.js\n",
+          "jevy.config.ts": 'export default { protect: ["a/**"] };\n',
+        });
+        repo.write("jevy.config.js", "export default {};\n");
+        const result = await repo.guard("--base", "main", "--json");
+        expect(result.code).toBe(0);
+        expect(kinds(result)).toEqual([]);
+      });
+
+      it("exits 2 for a config committed as a symbolic link, and says so", async () => {
+        const repo = scratch({
+          "shared/jevy.config.ts":
+            'export default { protect: ["plans/**"] };\n',
+          "web/tests/a.spec.ts": TEST,
+        });
+        symlinkSync(
+          "../shared/jevy.config.ts",
+          join(repo.dir, "web/jevy.config.ts"),
+        );
+        repo.git("add", "-A");
+        repo.git("commit", "-q", "-m", "link the config");
+        for (const args of [
+          ["--base", "main"],
+          ["--base", "main", "--head", "HEAD"],
+        ]) {
+          const result = await repo.guardIn("web", ...args);
+          expect(result.code).toBe(2);
+          expect(result.stderr).toMatch(
+            /^jevy guard: web\/jevy\.config\.ts is a symbolic link/,
+          );
+        }
+      });
+    });
+
+    describe("a new test file git ignores", () => {
+      it("is compared as added, outside node_modules and dist", async () => {
+        const ONLY = `import { test, expect } from "@playwright/test";
+test.only("x", async () => {
+  expect(1).toBe(1);
+});
+`;
+        const repo = scratch({
+          ".gitignore": "node_modules/\ndist/\n",
+          "tests/a.spec.ts": TEST,
+        });
+        repo.write(".git/info/exclude", "tests/zz.spec.ts\n");
+        repo.write("tests/zz.spec.ts", ONLY);
+        repo.write("node_modules/pkg/a.spec.ts", ONLY);
+        repo.write("dist/a.spec.ts", ONLY);
+        const result = await repo.guard("--base", "main", "--json");
+        expect(result.code).toBe(1);
+        const found = kinds(result);
+        expect(found).toContainEqual(["tests/zz.spec.ts", "only-added"]);
+        expect(found.map(([file]) => file)).toEqual(
+          found.map(() => "tests/zz.spec.ts"),
+        );
       });
     });
   },

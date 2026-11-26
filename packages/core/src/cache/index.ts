@@ -4,6 +4,7 @@ export type { DecisionKeyInput } from "./key.js";
 export {
   DECISION_RECORD_VERSION,
   parseRecord,
+  readRecordLine,
   serialiseRecord,
 } from "./record.js";
 export type { DecisionKind, DecisionRecord } from "./record.js";

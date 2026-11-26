@@ -29,3 +29,11 @@ export class RedactionError extends JevyError {}
  * A cache that cannot prove a record is well formed must not replay it.
  */
 export class CacheError extends JevyError {}
+
+/**
+ * The decider could not be reached, or kept returning invalid output after
+ * its retries. It is not an answer: the session memoises and holds nothing,
+ * so the next attempt asks again, and the matcher reports `needs-review`
+ * rather than a pass or a fail. Every other error still fails the test.
+ */
+export class DeciderError extends JevyError {}

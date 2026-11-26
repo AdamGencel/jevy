@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { readConfigSettings } from "./config-source.js";
 import { finding, sortFindings } from "./findings.js";
 import {
   lineOf,
@@ -6,6 +7,7 @@ import {
   normaliseCode,
   parseSource,
   propertyName,
+  stringValue,
   unwrap,
 } from "./source.js";
 import type { Finding, FindingKind } from "./types.js";
@@ -21,6 +23,13 @@ export interface ConfigFileChange {
   readonly file: string;
   readonly before: string | null;
   readonly after: string | null;
+  /**
+   * False when this file is not the one core's loader reads in its
+   * directory in both versions. Its `toSatisfy.blocking` then decides
+   * nothing on its own: `diffLoadedBlocking` compares the files the loader
+   * does read. Absent is true.
+   */
+  readonly loaded?: boolean;
 }
 
 interface Entry {
@@ -337,6 +346,110 @@ function classifyEntry(
   });
 }
 
+const BLOCKING = "toSatisfy.blocking";
+
+/**
+ * `toSatisfy.blocking` as the loader would receive it: `true`, `false`, or
+ * "absent", which is core's default, false. Null when the text does not
+ * show it. The strict reader decides, not the entries this diff compares:
+ * a weakening finding must rest on a value the loader is shown to receive.
+ */
+function blockingOf(text: string, file: string): boolean | "absent" | null {
+  const settings = readConfigSettings(text, file);
+  if (
+    settings.unreadable.includes("*") ||
+    settings.unreadable.includes(BLOCKING)
+  ) {
+    return null;
+  }
+  return settings.toSatisfyBlocking ?? "absent";
+}
+
+/**
+ * `blocking-switched-off` when base shows `toSatisfy.blocking: true` and
+ * head shows it `false` or not written, or null. A head value the text does
+ * not show may still be true, so it stays `config-changed`.
+ */
+function blockingFinding(
+  file: string,
+  texts: { readonly before: string; readonly after: string },
+  lines: {
+    readonly before: number | undefined;
+    readonly after: number | undefined;
+  },
+): Finding | null {
+  const now = blockingOf(texts.after, file);
+  if (blockingOf(texts.before, file) !== true || now === true || now === null) {
+    return null;
+  }
+  const removed = now === "absent";
+  return finding({
+    kind: "blocking-switched-off",
+    file,
+    line: lines.after ?? lines.before,
+    message: `${BLOCKING} switched off${removed ? " (removed; the default is false)" : ""}: toSatisfy now only reports and cannot fail a test`,
+    before: "true",
+    after: removed ? undefined : "false",
+  });
+}
+
+/** A config file as core's loader would find it: its path and text. */
+export interface LoadedConfigFile {
+  readonly path: string;
+  readonly text: string;
+}
+
+/** The line `toSatisfy.blocking` is written on in `text`, if it is. */
+function blockingLine(text: string, path: string): number | undefined {
+  const read = readJevyConfig(text, path);
+  return read.ok ? read.entries.get(BLOCKING)?.line : undefined;
+}
+
+/**
+ * `blocking-switched-off` for one directory, from the config core's loader
+ * reads there in each version (the first of `jevy.config.ts`, `.mts`,
+ * `.js`, `.mjs`), or null.
+ *
+ * Comparing file by file misses the ways a change can make the loader read
+ * a different file: delete the config, add one it reads first, or rename it
+ * where git does not pair the two names. Each leaves base's `true` behind
+ * with no file showing it switched off. A directory with no config in head
+ * gets the default, `false`. A head value the text does not show may still
+ * be true, so it is left to the file's own `config-changed`.
+ */
+export function diffLoadedBlocking(
+  base: LoadedConfigFile | null,
+  head: LoadedConfigFile | null,
+): Finding | null {
+  if (base === null || blockingOf(base.text, base.path) !== true) {
+    return null;
+  }
+  const now = head === null ? "absent" : blockingOf(head.text, head.path);
+  if (now === true || now === null) {
+    return null;
+  }
+  const outcome =
+    now === "absent"
+      ? "does not set it; the default is false"
+      : "sets it to false";
+  const why =
+    head === null
+      ? `${base.path} removed; the default is false`
+      : head.path === base.path
+        ? now === "absent"
+          ? "removed; the default is false"
+          : null
+        : `the loader now reads ${head.path} instead of ${base.path}, and it ${outcome}`;
+  return finding({
+    kind: "blocking-switched-off",
+    file: head?.path ?? base.path,
+    line: head === null ? undefined : blockingLine(head.text, head.path),
+    message: `${BLOCKING} switched off${why === null ? "" : ` (${why})`}: toSatisfy now only reports and cannot fail a test`,
+    before: "true",
+    after: now === false ? "false" : undefined,
+  });
+}
+
 function unreadable(file: string, side: string, reason: string): Finding {
   return finding({
     file,
@@ -419,12 +532,28 @@ function compareJevyConfig(change: ConfigFileChange): readonly Finding[] {
     return [unreadable(file, "base", was.reason)];
   }
   const paths = [...new Set([...was.entries.keys(), ...now.entries.keys()])];
-  const out: Finding[] = [];
+  const switchedOff =
+    change.loaded === false
+      ? null
+      : blockingFinding(
+          file,
+          { before, after },
+          {
+            before: was.entries.get(BLOCKING)?.line,
+            after: now.entries.get(BLOCKING)?.line,
+          },
+        );
+  const out: Finding[] = switchedOff === null ? [] : [switchedOff];
   const reported = new Set<string>();
   for (const path of paths.sort()) {
     const b = was.entries.get(path);
     const a = now.entries.get(path);
     if (b !== undefined && a !== undefined && sameValue(b, a)) {
+      continue;
+    }
+    // Reported above, as the weakening it is: once, whether the key or the
+    // whole `toSatisfy` value (`undefined`, a constant) changed.
+    if (switchedOff !== null && (path === BLOCKING || path === "toSatisfy")) {
       continue;
     }
     const result = classifyEntry(file, path, b, a);
@@ -489,54 +618,360 @@ function retriesValue(expression: ts.Expression): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** One side of a Playwright config, as far as retries go. */
+interface RetriesModel {
+  readonly source: ts.SourceFile;
+  /** `retries` settings outside any `projects` entry, in source order. */
+  readonly top: readonly Setting[];
+  readonly projects: readonly Project[];
+}
+
+/** One entry of a `projects` array. */
+interface Project {
+  /** The `name` when it is a string literal; null otherwise. */
+  readonly name: string | null;
+  /**
+   * What tells this entry apart for a reorder check: its literal name, the
+   * code of a name that is not a literal, or the code of the whole entry.
+   */
+  readonly key: string;
+  /** The entry's own `retries`, if it sets one. */
+  readonly retries: Setting | undefined;
+  /** False for an entry that is not an object literal: nothing is known. */
+  readonly readable: boolean;
+  readonly node: ts.Node;
+}
+
+/**
+ * The array literals that hold Playwright projects: the value of a
+ * `projects` property, or of a variable named `projects`.
+ */
+function projectArrays(
+  sourceFile: ts.SourceFile,
+): readonly ts.ArrayLiteralExpression[] {
+  const out: ts.ArrayLiteralExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    const value =
+      ts.isPropertyAssignment(node) && propertyName(node.name) === "projects"
+        ? node.initializer
+        : ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === "projects"
+          ? node.initializer
+          : undefined;
+    const array = value === undefined ? undefined : unwrap(value);
+    if (array !== undefined && ts.isArrayLiteralExpression(array)) {
+      out.push(array);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return out;
+}
+
+/** The value of the last property `name` written in `object`, if any. */
+function ownProperty(
+  object: ts.ObjectLiteralExpression,
+  name: string,
+): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  for (const property of object.properties) {
+    if (
+      ts.isPropertyAssignment(property) &&
+      propertyName(property.name) === name
+    ) {
+      found = property.initializer;
+    }
+  }
+  return found;
+}
+
+function projectOf(element: ts.Expression, source: ts.SourceFile): Project {
+  const node = unwrap(element);
+  if (!ts.isObjectLiteralExpression(node)) {
+    return {
+      name: null,
+      key: normaliseCode(node, source),
+      retries: undefined,
+      readable: false,
+      node,
+    };
+  }
+  const nameValue = ownProperty(node, "name");
+  const retries = ownProperty(node, "retries");
+  const name = nameValue === undefined ? null : stringValue(nameValue);
+  return {
+    name,
+    key:
+      name ?? normaliseCode(nameValue === undefined ? node : nameValue, source),
+    retries:
+      retries === undefined ? undefined : { name: "retries", value: retries },
+    readable: true,
+    node,
+  };
+}
+
+function retriesModel(source: ts.SourceFile): RetriesModel {
+  const arrays = projectArrays(source);
+  const projects = arrays.flatMap((array) =>
+    array.elements.map((element) => projectOf(element, source)),
+  );
+  const owned = new Set(
+    projects.flatMap((project) =>
+      project.retries === undefined ? [] : [project.retries.value],
+    ),
+  );
+  const top = collectSettings(source, new Set(["retries"])).filter(
+    (setting) => !owned.has(setting.value),
+  );
+  return { source, top, projects };
+}
+
+/**
+ * The top-level retries a project falls back to: Playwright's 0 when none
+ * is set, null when one cannot be read. With several (two exported objects,
+ * a helper) the base side takes the smallest and the head side the
+ * largest, so a raise is never hidden by the choice.
+ */
+function topRetries(model: RetriesModel, side: "base" | "head"): number | null {
+  const values = model.top.map((setting) => retriesValue(setting.value));
+  if (values.length === 0) {
+    return 0;
+  }
+  const numbers = values.filter((value): value is number => value !== null);
+  if (numbers.length !== values.length) {
+    return null;
+  }
+  return side === "base" ? Math.min(...numbers) : Math.max(...numbers);
+}
+
+/**
+ * The top-level settings, paired by position among themselves only: a
+ * project's own `retries` never pairs with them. A setting new in head is
+ * raised from Playwright's default of 0.
+ */
+function diffTopRetries(
+  file: string,
+  was: RetriesModel,
+  now: RetriesModel,
+): Finding[] {
+  const out: Finding[] = [];
+  now.top.forEach((setting, index) => {
+    const previous = was.top[index];
+    const found = compareRetries(file, was.source, now.source, {
+      previous,
+      current: setting,
+      old: previous === undefined ? 0 : retriesValue(previous.value),
+      label: "",
+      at: setting.value,
+    });
+    if (found !== null) {
+      out.push(found);
+    }
+  });
+  return out;
+}
+
+interface RetriesPair {
+  readonly previous: Setting | undefined;
+  readonly current: Setting | undefined;
+  readonly old: number | null;
+  /** Appended to the message: ` for project "x"`, or empty. */
+  readonly label: string;
+  /** Where the finding points in the head version. */
+  readonly at: ts.Node;
+}
+
+/** The finding for one pair of retries, or null when they did not rise. */
+function compareRetries(
+  file: string,
+  before: ts.SourceFile,
+  after: ts.SourceFile,
+  pair: RetriesPair,
+): Finding | null {
+  const { previous, current } = pair;
+  if (current === undefined) {
+    return null;
+  }
+  if (
+    previous !== undefined &&
+    normaliseCode(previous.value, before) ===
+      normaliseCode(current.value, after)
+  ) {
+    return null;
+  }
+  const value = retriesValue(current.value);
+  const line = lineOf(pair.at, after);
+  if (pair.old === null || value === null) {
+    return finding({
+      file,
+      line,
+      kind: "config-changed",
+      message: `retries changed and is not a literal number${pair.label}`,
+      ...(previous === undefined
+        ? {}
+        : { before: display(previous.value, before) }),
+      after: display(current.value, after),
+    });
+  }
+  return value > pair.old
+    ? finding({
+        file,
+        line,
+        kind: "retries-raised",
+        message: `retries raised from ${String(pair.old)} to ${String(value)}${pair.label}`,
+        before: String(pair.old),
+        after: String(value),
+      })
+    : null;
+}
+
+/** Whether every project has a literal name, and no name is used twice. */
+function namedUniquely(projects: readonly Project[]): boolean {
+  const names = projects.map((project) => project.name);
+  return (
+    names.every((name) => name !== null) && new Set(names).size === names.length
+  );
+}
+
+/**
+ * The effective retries of one project before and after: its own when it
+ * sets them, else the top-level ones. Only a project that sets its own on
+ * either side is compared here; one that never does follows the top-level
+ * setting, which `diffTopRetries` already compares.
+ */
+function diffProject(
+  file: string,
+  sides: { readonly was: RetriesModel; readonly now: RetriesModel },
+  before: Project | undefined,
+  after: Project,
+  label: string,
+): Finding | null {
+  const { was, now } = sides;
+  if (
+    !after.readable ||
+    before?.readable === false ||
+    (before?.retries === undefined && after.retries === undefined)
+  ) {
+    return null;
+  }
+  const old =
+    before?.retries === undefined
+      ? topRetries(was, "base")
+      : retriesValue(before.retries.value);
+  // A project that drops its own retries falls back to the top-level ones,
+  // or to Playwright's default of 0, which is never a raise.
+  const effective =
+    after.retries === undefined
+      ? topRetries(now, "head")
+      : retriesValue(after.retries.value);
+  if (old === null || effective === null) {
+    return after.retries === undefined
+      ? null
+      : compareRetries(file, was.source, now.source, {
+          previous: before?.retries,
+          current: after.retries,
+          old,
+          label,
+          at: after.retries.value,
+        });
+  }
+  if (effective <= old) {
+    return null;
+  }
+  return finding({
+    file,
+    line: lineOf(after.retries?.value ?? after.node, now.source),
+    kind: "retries-raised",
+    message: `retries raised from ${String(old)} to ${String(effective)}${label}`,
+    before: String(old),
+    after: String(effective),
+  });
+}
+
+/**
+ * Projects paired by literal `name`, so that reordering them is not a
+ * change and swapping their retries is. When a name is not a literal or is
+ * used twice, the projects are paired by position instead, and a change in
+ * their order is reported for review: by position, a swap cannot be told
+ * from two unrelated edits.
+ */
+function diffProjectRetries(
+  file: string,
+  was: RetriesModel,
+  now: RetriesModel,
+): Finding[] {
+  const sides = { was, now };
+  const out: Finding[] = [];
+  const push = (found: Finding | null): void => {
+    if (found !== null) {
+      out.push(found);
+    }
+  };
+  if (namedUniquely(was.projects) && namedUniquely(now.projects)) {
+    for (const project of now.projects) {
+      const before = was.projects.find((p) => p.name === project.name);
+      push(
+        diffProject(
+          file,
+          sides,
+          before,
+          project,
+          ` for project "${project.name ?? ""}"`,
+        ),
+      );
+    }
+    return out;
+  }
+  now.projects.forEach((project, index) => {
+    push(
+      diffProject(
+        file,
+        sides,
+        was.projects[index],
+        project,
+        ` for project ${String(index + 1)}`,
+      ),
+    );
+  });
+  const order = (model: RetriesModel): readonly string[] =>
+    model.projects.map((project) => project.key);
+  const [b, a] = [order(was), order(now)];
+  if (
+    b.join("\u0000") !== a.join("\u0000") &&
+    [...b].sort().join("\u0000") === [...a].sort().join("\u0000")
+  ) {
+    const first = now.projects[0];
+    out.push(
+      finding({
+        file,
+        line: first === undefined ? undefined : lineOf(first.node, now.source),
+        kind: "config-changed",
+        message:
+          "projects reordered; their names are not all distinct literals, so retries were compared by position. Review which project has which retries",
+      }),
+    );
+  }
+  return out;
+}
+
+/**
+ * Raised retries: the top-level setting, and each project's effective
+ * retries (its own, else the top-level ones). The two are kept apart so
+ * that moving the top-level setting past the `projects` array never pairs
+ * it with a project's.
+ */
 function diffRetries(
   file: string,
   before: ts.SourceFile,
   after: ts.SourceFile,
 ): Finding[] {
-  const was = collectSettings(before, new Set(["retries"]));
-  const now = collectSettings(after, new Set(["retries"]));
-  const out: Finding[] = [];
-  now.forEach((setting, index) => {
-    const previous = was[index];
-    if (
-      previous !== undefined &&
-      normaliseCode(previous.value, before) ===
-        normaliseCode(setting.value, after)
-    ) {
-      return;
-    }
-    // Playwright retries nothing unless told to.
-    const old = previous === undefined ? 0 : retriesValue(previous.value);
-    const current = retriesValue(setting.value);
-    const line = lineOf(setting.value, after);
-    if (old === null || current === null) {
-      out.push(
-        finding({
-          file,
-          line,
-          kind: "config-changed",
-          message: "retries changed and is not a literal number",
-          ...(previous === undefined
-            ? {}
-            : { before: display(previous.value, before) }),
-          after: display(setting.value, after),
-        }),
-      );
-    } else if (current > old) {
-      out.push(
-        finding({
-          file,
-          line,
-          kind: "retries-raised",
-          message: `retries raised from ${String(old)} to ${String(current)}`,
-          before: String(old),
-          after: String(current),
-        }),
-      );
-    }
-  });
-  return out;
+  const was = retriesModel(before);
+  const now = retriesModel(after);
+  return [
+    ...diffTopRetries(file, was, now),
+    ...diffProjectRetries(file, was, now),
+  ];
 }
 
 function diffSelection(

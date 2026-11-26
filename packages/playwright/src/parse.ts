@@ -1,4 +1,4 @@
-import { SnapshotError } from "@jevyjs/core";
+import { SnapshotError, reduceUrl } from "@jevyjs/core";
 import type { AccessibilityNode } from "@jevyjs/core";
 import {
   LineCounter,
@@ -38,7 +38,21 @@ interface Draft {
   focused?: boolean;
   level?: number;
   invalid?: string;
+  url?: string;
   children?: AccessibilityNode[];
+}
+
+/** A `- /name: text` entry: a property of the node it is nested under. */
+interface Property {
+  readonly property: string;
+  readonly text: string | undefined;
+  readonly at: number;
+}
+
+/** The entries of one list: its child nodes, and the `/url` if it has one. */
+interface Items {
+  readonly nodes: AccessibilityNode[];
+  readonly url: string | undefined;
 }
 
 interface ParsedKey {
@@ -49,6 +63,8 @@ interface ParsedKey {
 
 interface Context {
   readonly lines: LineCounter;
+  /** Reduce each `/url` with core's `reduceUrl`, or keep it as printed. */
+  readonly reduceUrls: boolean;
 }
 
 /**
@@ -63,8 +79,15 @@ interface Context {
  * `[cursor]` and `[box]` are dropped: they change between runs and say
  * nothing about the page. A node marked `[aria-hidden]` (only `mode: "ai"`
  * prints it) is dropped with its subtree, as it is not in the accessibility
- * tree. `/url` and `/placeholder` are dropped because core's type has no
- * field for them.
+ * tree.
+ *
+ * `/url` becomes the node's `url`. Playwright prints the raw `href`
+ * attribute, unresolved and with its query string and fragment, so it is
+ * reduced here with core's `reduceUrl`: a token in the query string never
+ * enters the tree. Core reduces it again, which changes nothing, as the
+ * reduction is idempotent. An empty href gives no url. `/placeholder` and any
+ * other property are dropped, because core's type has no field for them.
+ * {@link parseRawAriaSnapshot} keeps the href as printed instead.
  *
  * Inline text after the colon is the `value` for value-bearing roles (see
  * {@link VALUE_ROLES}) and a child text node otherwise. A `text:` entry is a
@@ -74,6 +97,25 @@ interface Context {
  * repeat snapshot text, because a snapshot can hold a typed secret.
  */
 export function parseAriaSnapshot(yaml: string): AccessibilityNode {
+  return parse(yaml, true);
+}
+
+/**
+ * {@link parseAriaSnapshot}, but each `url` is the `href` exactly as printed,
+ * query string and fragment included.
+ *
+ * For the bridge only, which must scrub secret values from the whole href
+ * before it is reduced: a password such as `hunt#er2zz` in `/u/hunt#er2zz`
+ * would be cut at the `#` by the reduction, and `/u/hunt` no longer contains
+ * the secret, so its start would survive. The tree this returns can hold a
+ * query-string token; it must go through `scrubSecrets`, which reduces every
+ * url, before it is used.
+ */
+export function parseRawAriaSnapshot(yaml: string): AccessibilityNode {
+  return parse(yaml, false);
+}
+
+function parse(yaml: string, reduceUrls: boolean): AccessibilityNode {
   const lines = new LineCounter();
   const document = parseDocument(yaml, {
     schema: "failsafe",
@@ -82,7 +124,7 @@ export function parseAriaSnapshot(yaml: string): AccessibilityNode {
     strict: true,
     uniqueKeys: true,
   });
-  const context: Context = { lines };
+  const context: Context = { lines, reduceUrls };
   const problem = document.errors[0] ?? document.warnings[0];
   if (problem !== undefined) {
     fail(context, problem.pos[0], `YAML does not parse (${problem.code})`);
@@ -92,7 +134,7 @@ export function parseAriaSnapshot(yaml: string): AccessibilityNode {
   if (!isSeq(contents)) {
     fail(context, startOf(contents), "expected a list of nodes");
   }
-  const children = parseItems(contents.items, context, true);
+  const children = parseItems(contents.items, context, true).nodes;
   const [first] = children;
   if (children.length === 1 && first !== undefined) return first;
   return children.length === 0
@@ -104,21 +146,40 @@ function parseItems(
   items: readonly unknown[],
   context: Context,
   topLevel: boolean,
-): AccessibilityNode[] {
+): Items {
   const nodes: AccessibilityNode[] = [];
+  let url: string | undefined;
+  let urlSeen = false;
   for (const item of items) {
-    const node = parseItem(item, context, topLevel);
-    if (node !== undefined) nodes.push(node);
+    const entry = parseItem(item, context, topLevel);
+    if (entry === undefined) continue;
+    if (!isProperty(entry)) {
+      nodes.push(entry);
+      continue;
+    }
+    if (entry.property !== "/url") continue;
+    if (urlSeen) fail(context, entry.at, "repeated property");
+    urlSeen = true;
+    const printed = entry.text ?? "";
+    const kept = context.reduceUrls ? reduceUrl(printed) : printed;
+    url = kept === "" ? undefined : kept;
   }
-  return nodes;
+  return { nodes, url };
 }
 
-/** One list entry: `- key`, `- key: text` or `- key:` with a nested list. */
+function isProperty(entry: AccessibilityNode | Property): entry is Property {
+  return "property" in entry;
+}
+
+/**
+ * One list entry: `- key`, `- key: text`, `- key:` with a nested list, or a
+ * `- /property: text` of the enclosing node.
+ */
 function parseItem(
   item: unknown,
   context: Context,
   topLevel: boolean,
-): AccessibilityNode | undefined {
+): AccessibilityNode | Property | undefined {
   if (isScalar(item)) {
     const key = scalarText(item, context);
     if (key.startsWith("/")) {
@@ -148,8 +209,8 @@ function parseItem(
     if (value !== null && !isScalar(value)) {
       fail(context, at, "a property value must be text");
     }
-    if (isScalar(value)) scalarText(value, context);
-    return undefined;
+    const text = isScalar(value) ? scalarText(value, context) : undefined;
+    return { property: key, text, at };
   }
 
   if (key === "text") {
@@ -173,7 +234,9 @@ function parseItem(
     if (value.anchor !== undefined || value.tag !== undefined) {
       fail(context, at, "anchors and tags are not allowed");
     }
-    const children = parseItems(value.items, context, false);
+    const items = parseItems(value.items, context, false);
+    const children = items.nodes;
+    if (items.url !== undefined) node.url = items.url;
     const [only] = children;
     if (
       VALUE_ROLES.has(node.role) &&

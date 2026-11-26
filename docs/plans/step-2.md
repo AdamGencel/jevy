@@ -97,7 +97,7 @@ The two proposals, `protect` and `checks`, were kept as written. `guard.tests` i
 - **The printed settings call `./node_modules/.bin/jevy`, not `npx`** (2d). `npx --no-install` still asked the npm registry for a package named `jevy`.
 - **Protected-path matching ignores case and Unicode form** (2c), because macOS and Windows disks do.
 
-Not done, and listed as known limits in the README: a test weakened inside a git submodule; a config in another directory of a monorepo than the one the guard runs in; an edit hidden from git by a forged file timestamp (`core.trustctime false`), which would need the guard to hash files itself.
+Not done, and listed as known limits in the README: a test weakened inside a git submodule (a changed submodule is now flagged for review); a config in another directory of a monorepo than the one the guard runs in. An edit hidden by a forged file timestamp (`core.trustctime false`) is now seen: the guard compares the bytes of the files it checks with the base itself.
 
 ## What isitdone and tdd-guard taught us
 

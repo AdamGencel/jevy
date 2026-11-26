@@ -14,6 +14,7 @@ const EVERY_KEY = [
   "checks",
   "web3.policy",
   "ci.mainBranch",
+  "toSatisfy.blocking",
 ];
 
 const NOTHING: ConfigSettings = {
@@ -57,6 +58,44 @@ describe("readConfigSettings", () => {
       mainBranch: "trunk",
       unreadable: [],
     });
+  });
+
+  it("reads toSatisfy.blocking when it is a boolean literal", () => {
+    expect(config(`{ toSatisfy: { blocking: true } }`)).toEqual({
+      ...NOTHING,
+      toSatisfyBlocking: true,
+    });
+    expect(config(`{ toSatisfy: { blocking: false } }`)).toEqual({
+      ...NOTHING,
+      toSatisfyBlocking: false,
+    });
+    // Absent, or set to undefined, is the default: nothing to report.
+    expect(config(`{ toSatisfy: {} }`)).toEqual(NOTHING);
+    expect(config(`{ toSatisfy: { blocking: undefined } }`)).toEqual(NOTHING);
+  });
+
+  it("reads void of a literal as undefined, as core's loader receives it", () => {
+    expect(config(`{ toSatisfy: { blocking: void 0 } }`)).toEqual(NOTHING);
+    expect(config(`{ toSatisfy: void 0 }`)).toEqual(NOTHING);
+    expect(config(`{ cache: { dir: void "x" } }`)).toEqual(NOTHING);
+    // void of anything else runs code first, so it is not read.
+    expect(
+      config(`{ toSatisfy: { blocking: void check() } }`).unreadable,
+    ).toEqual(["toSatisfy.blocking"]);
+  });
+
+  it.each([
+    '{ toSatisfy: { blocking: process.env.CI === "true" } }',
+    `{ toSatisfy: { blocking: "true" } }`,
+    `{ toSatisfy: { blocking: 1 } }`,
+    `{ toSatisfy: { blocking: !false } }`,
+    `{ toSatisfy: shared }`,
+    `{ toSatisfy: { blocking: true, ...shared } }`,
+    `{ toSatisfy: { blocking: true }, ...shared }`,
+  ])("lists toSatisfy.blocking as unreadable in %s", (body) => {
+    const settings = config(body);
+    expect(settings.toSatisfyBlocking).toBeUndefined();
+    expect(settings.unreadable).toContain("toSatisfy.blocking");
   });
 
   it("reads an absent key as null, and not as unreadable", () => {
@@ -143,6 +182,7 @@ export default defineConfig({ protect, checks, guard: { tests: shared }, cache: 
 `),
     ).toEqual({
       ...NOTHING,
+      imports: ["shared.js"],
       unreadable: ["cache.dir", "guard.tests", "protect", "checks"],
     });
   });
@@ -156,6 +196,7 @@ export default defineConfig({ protect, checks, guard: { tests: shared }, cache: 
         checks: "pnpm test",
         web3: { policy: \`./\${name}.ts\` },
         ci: { mainBranch: 42 },
+        toSatisfy: { blocking: process.env.CI },
       }`),
     ).toEqual({ ...NOTHING, unreadable: EVERY_KEY });
   });
@@ -197,7 +238,15 @@ export default defineConfig({ protect, checks, guard: { tests: shared }, cache: 
     ).toEqual({
       ...NOTHING,
       protect: ["a"],
-      unreadable: ["guard.tests", "checks", "web3.policy", "ci.mainBranch"],
+      // Changed on purpose: toSatisfy.blocking is read now, and the spread
+      // may set it as well.
+      unreadable: [
+        "guard.tests",
+        "checks",
+        "web3.policy",
+        "ci.mainBranch",
+        "toSatisfy.blocking",
+      ],
     });
     // The same rule one level down.
     expect(
@@ -432,11 +481,16 @@ export default { protect, cache, guard: { tests }, checks: [] };
         `import jevy from "@jevyjs/core";\nexport default jevy.defineConfig(${SAFE});`,
         `import type { JevyConfig } from "@jevyjs/core";\nconst config: JevyConfig = ${SAFE};\nexport default config;`,
         `export default defineConfig(${SAFE});`,
-        // Code that never names the config object does not unprove it.
-        `${IMPORT}import { rules } from "./rules.js";\nconst helper = (x: number) => x + 1;\nfunction other() { return helper(1); }\nexport default defineConfig({ cache: { dir: ".jevy/decisions" }, protect: ["tests/**"], redact: rules, thresholds: { pass: other() } });`,
       ]) {
         expect(read(text), text).toEqual(expected);
       }
+      // Code that never names the config object does not unprove it. The
+      // file it imports is listed, so that a caller can protect it.
+      expect(
+        read(
+          `${IMPORT}import { rules } from "./rules.js";\nconst helper = (x: number) => x + 1;\nfunction other() { return helper(1); }\nexport default defineConfig({ cache: { dir: ".jevy/decisions" }, protect: ["tests/**"], redact: rules, thresholds: { pass: other() } });`,
+        ),
+      ).toEqual({ ...expected, imports: ["rules.js"] });
       for (const text of [
         `module.exports = ${SAFE};`,
         `const config = ${SAFE};\nmodule.exports = config;`,
@@ -554,5 +608,157 @@ describe("findConfig", () => {
     const seen: string[] = [];
     expect(await findConfig(reader({}, seen), "")).toBeNull();
     expect(seen).toEqual([...CONFIG_FILENAMES]);
+  });
+});
+
+describe("readConfigSettings: what the config imports", () => {
+  it("lists the files it imports, relative to the repository root", () => {
+    const text = `import { defineConfig } from "@jevyjs/core";
+import { join } from "node:path";
+import { PASS } from "./thresholds.ts";
+import * as rules from "../shared/rules.js";
+import type { Types } from "./types.ts";
+import "./side-effect.mjs";
+export * from "./reexport.js";
+import legacy = require("./legacy");
+const { adapter } = require("./llm.cjs");
+export default defineConfig({ thresholds: { pass: PASS } });
+`;
+    expect(read(text, "packages/web/jevy.config.ts").imports).toEqual([
+      "packages/web/thresholds.ts",
+      "packages/shared/rules.js",
+      "packages/web/side-effect.mjs",
+      "packages/web/reexport.js",
+      "packages/web/legacy",
+      "packages/web/llm.cjs",
+    ]);
+  });
+
+  it("lists nothing for a config with no file imports", () => {
+    expect(config("{}").imports).toBeUndefined();
+  });
+
+  it("marks imports unreadable when one names a file it cannot place", () => {
+    for (const specifier of [
+      "@/thresholds",
+      "#thresholds",
+      "~/x",
+      "/abs/x.ts",
+    ]) {
+      const settings = read(
+        `import { PASS } from "${specifier}";\nexport default { thresholds: { pass: PASS } };\n`,
+      );
+      expect(settings.unreadable, specifier).toEqual(["imports"]);
+    }
+  });
+});
+
+describe("readConfigSettings: a config that can change itself as it loads", () => {
+  const SAFE =
+    '{ protect: ["critical/**"], cache: { dir: ".jevy/decisions" } }';
+
+  it.each([
+    [
+      "require.cache",
+      `module.exports = ${SAFE};\nrequire.cache[__filename].exports.cache.dir = "fixtures";`,
+    ],
+    [
+      "require.cache, without __filename",
+      `module.exports = ${SAFE};\nfor (const m of Object.values(require.cache)) m.exports.cache.dir = "x";`,
+    ],
+    ["__filename", `module.exports = ${SAFE};\nconsole.log(__filename);`],
+    ["import.meta", `export default ${SAFE};\nconsole.log(import.meta.url);`],
+    ["globalThis", `export default ${SAFE};\nglobalThis.x = 1;`],
+    [
+      "Object.prototype",
+      `export default ${SAFE};\nObject.prototype.cache = { dir: "elsewhere" };`,
+    ],
+    [
+      "Object.defineProperty",
+      `export default ${SAFE};\nObject.defineProperty(Object.prototype, "cache", { value: { dir: "elsewhere" } });`,
+    ],
+    [
+      "Reflect",
+      `export default ${SAFE};\nReflect.set(Object.getPrototypeOf({}), "cache", 1);`,
+    ],
+    [
+      "Object.getPrototypeOf",
+      `export default ${SAFE};\nObject.assign(Object.getPrototypeOf({}), { cache: { dir: "x" } });`,
+    ],
+    [
+      "__lookupGetter__",
+      `export default ${SAFE};\n({}).__lookupGetter__("__proto__").call({}).cache = { dir: "x" };`,
+    ],
+    ["eval", `export default ${SAFE};\neval("1");`],
+    ["Function(", `export default ${SAFE};\nFunction("return 1")();`],
+    [
+      "a prototype reached without naming Object",
+      `export default ${SAFE};\n({}).constructor.prototype.cache = { dir: "x" };`,
+    ],
+    [
+      "an import of itself",
+      `import self from "./jevy.config.ts";\nexport default ${SAFE};\nqueueMicrotask(() => { self.protect.length = 0; });`,
+    ],
+    [
+      "an import of itself without the extension",
+      `import self from "./jevy.config";\nexport default ${SAFE};\nqueueMicrotask(() => { self.protect.length = 0; });`,
+    ],
+    [
+      "a require of itself",
+      `module.exports = ${SAFE};\nsetTimeout(() => { require("./jevy.config.ts").protect.length = 0; });`,
+    ],
+    [
+      "a require whose path is not a literal",
+      `module.exports = ${SAFE};\nconst p = "./jevy.config.ts";\nsetTimeout(() => { require(p).protect.length = 0; });`,
+    ],
+  ])('answers ["*"] for a config that mentions %s', (_, text) => {
+    expect(read(text).unreadable).toEqual(["*"]);
+  });
+
+  it.each([
+    [
+      "p[1] inside an inline adapter",
+      `const a = { complete(p) { return p[1]; } };\nexport default { deciders: { llm: { adapter: a, model: "m" } } };`,
+    ],
+    [
+      "m[1] of a regex match inside an adapter",
+      `const adapter = {\n  async complete(prompt) {\n    const m = /verdict: (\\w+)/.exec(prompt);\n    return m === null ? "fail" : m[1];\n  },\n};\nexport default { deciders: { llm: { adapter, model: "m" } }, protect: ["tests/**"] };`,
+    ],
+    [
+      "m[0] and arr[-1] on values that are not the config",
+      `const pick = (m, arr) => [m[0], arr[-1], arr[+2], arr[(3)], arr[0x1]];\nexport default { protect: ["tests/**"], deciders: { llm: { adapter: { complete: pick }, model: "m" } } };`,
+    ],
+  ])("reads a config whose code has a numeric index: %s", (_, text) => {
+    expect(read(text).unreadable).toEqual([]);
+    expect(read(text, "jevy.config.js").unreadable).toEqual([]);
+  });
+
+  it.each([
+    [
+      "a numeric index read on the config object",
+      `const config = ${SAFE};\nconsole.log(config[0]);\nexport default config;`,
+    ],
+    [
+      "a numeric index written on the config object",
+      `const config = ${SAFE};\nconfig[0] = { dir: "x" };\nexport default config;`,
+    ],
+    [
+      "a numeric index written on a second name for the config object",
+      `const config = ${SAFE};\nconst alias = config;\nalias[-1] = { dir: "x" };\nexport default config;`,
+    ],
+    [
+      "a numeric index written on module.exports",
+      `module.exports = ${SAFE};\nmodule.exports[0] = { dir: "x" };`,
+    ],
+    [
+      "a key that is not a literal",
+      `const config = ${SAFE};\nconst k = "cache";\nconst f = (o) => o[k];\nexport default config;`,
+    ],
+    [
+      "a numeric index beside a constructor reached through a string key",
+      `export default ${SAFE};\nconst x = [1][0];\n({})["constructor"]["prototype"].cache = { dir: "x" };`,
+    ],
+  ])('still answers ["*"] for %s', (_, text) => {
+    expect(read(text).unreadable).toEqual(["*"]);
   });
 });

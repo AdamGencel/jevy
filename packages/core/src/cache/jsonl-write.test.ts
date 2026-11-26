@@ -26,7 +26,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 function makeRecord(key: string): DecisionRecord {
   return {
-    v: 1,
+    v: 2,
     key,
     spec: "tests/checkout.spec.ts",
     step: "toSatisfy#1",

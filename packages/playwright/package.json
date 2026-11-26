@@ -2,7 +2,7 @@
   "name": "@jevyjs/playwright",
   "private": true,
   "version": "0.0.0",
-  "description": "Playwright integration for Jevy: page snapshots, and later semantic assertions and the report",
+  "description": "Playwright integration for Jevy: the toSatisfy matcher and its fixtures, page snapshots with secret fields blanked, and the report.json reporter",
   "license": "MIT",
   "author": "Adam Gencel",
   "type": "module",
@@ -17,7 +17,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./reporter": {
+      "types": "./dist/reporter.d.ts",
+      "import": "./dist/reporter.js",
+      "default": "./dist/reporter.js"
     }
   },
   "publishConfig": {
@@ -38,6 +44,7 @@
   },
   "dependencies": {
     "@jevyjs/core": "workspace:*",
+    "@jevyjs/deciders-llm": "workspace:*",
     "yaml": "catalog:"
   },
   "peerDependencies": {

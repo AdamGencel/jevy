@@ -29,6 +29,7 @@ const STRING_FIELDS = [
   "autocomplete",
   "haspopup",
   "orientation",
+  "url",
 ] as const;
 
 /**

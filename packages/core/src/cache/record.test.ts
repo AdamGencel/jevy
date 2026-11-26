@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { CacheError } from "../errors.js";
-import { parseRecord, serialiseRecord } from "./record.js";
+import {
+  DECISION_RECORD_VERSION,
+  parseRecord,
+  readRecordLine,
+  serialiseRecord,
+} from "./record.js";
 import type { DecisionRecord } from "./record.js";
 
 const record: DecisionRecord = {
-  v: 1,
+  v: 2,
   key: `sha256:${"1".repeat(64)}`,
   spec: "tests/checkout.spec.ts",
   step: "toSatisfy#2",
@@ -68,7 +73,7 @@ describe("serialiseRecord", () => {
     };
     expect(serialiseRecord(reversedThresholds)).toBe(serialiseRecord(record));
     expect(serialiseRecord(record)).toBe(
-      '{"v":1,"key":"sha256:1111111111111111111111111111111111111111111111111111111111111111","spec":"tests/checkout.spec.ts","step":"toSatisfy#2","kind":"yesno","question":"The page shows the order as confirmed","snapshotHash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"abstained":false,"truncated":false,"verdict":"pass","thresholds":{"pass":0.8,"fail":0.5},"rules":"sha256:3333333333333333333333333333333333333333333333333333333333333333","createdAt":"2026-10-27T22:00:00.000Z","reviewedBy":null,"reviewVerdict":null}',
+      '{"v":2,"key":"sha256:1111111111111111111111111111111111111111111111111111111111111111","spec":"tests/checkout.spec.ts","step":"toSatisfy#2","kind":"yesno","question":"The page shows the order as confirmed","snapshotHash":"sha256:2222222222222222222222222222222222222222222222222222222222222222","decider":"jev","model":"jev-1.14.0","answer":"yes","confidence":0.93,"abstained":false,"truncated":false,"verdict":"pass","thresholds":{"pass":0.8,"fail":0.5},"rules":"sha256:3333333333333333333333333333333333333333333333333333333333333333","createdAt":"2026-10-27T22:00:00.000Z","reviewedBy":null,"reviewVerdict":null}',
     );
   });
 
@@ -105,7 +110,9 @@ describe("parseRecord", () => {
   });
 
   it.each<[string, Record<string, unknown>]>([
-    ["wrong version", { v: 2 }],
+    ["a superseded version", { v: 1 }],
+    ["a future version", { v: 3 }],
+    ["a string version", { v: "2" }],
     ["malformed key", { key: "sha256:xyz" }],
     ["empty spec", { spec: "" }],
     ["non-string step", { step: 3 }],
@@ -165,5 +172,39 @@ describe("parseRecord", () => {
       verdict: "needs-review",
     };
     expect(parseRecord(serialiseRecord(abstained))).toEqual(abstained);
+  });
+});
+
+describe("readRecordLine", () => {
+  it("is version 2, the version that carries version 2 keys", () => {
+    expect(DECISION_RECORD_VERSION).toBe(2);
+  });
+
+  it("returns a current record as parseRecord does", () => {
+    expect(readRecordLine(serialiseRecord(record))).toEqual(record);
+  });
+
+  it("skips a version 1 record, whose key no current key can equal", () => {
+    expect(readRecordLine(lineWith({ v: 1 }))).toBeUndefined();
+    expect(readRecordLine('{"v":1}')).toBeUndefined();
+  });
+
+  it("rejects a version 1 line with a field version 1 never had, such as page text", () => {
+    expect(() => readRecordLine('{"v":1,"page":"secret text"}')).toThrow(
+      /unknown field "page"/,
+    );
+    expect(() => readRecordLine(lineWith({ v: 1, snapshot: {} }))).toThrow(
+      CacheError,
+    );
+  });
+
+  it("still rejects malformed lines and versions it does not know", () => {
+    expect(() => readRecordLine("not json")).toThrow(CacheError);
+    expect(() => readRecordLine("[1]")).toThrow(CacheError);
+    expect(() => readRecordLine(lineWith({ v: 3 }))).toThrow(CacheError);
+    expect(() => readRecordLine(lineWith({ v: "1" }))).toThrow(CacheError);
+    expect(() => readRecordLine(lineWith({ confidence: 2 }))).toThrow(
+      CacheError,
+    );
   });
 });

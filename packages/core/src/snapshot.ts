@@ -32,6 +32,12 @@ export interface AccessibilityNode {
   readonly haspopup?: string;
   readonly invalid?: string;
   readonly orientation?: string;
+  /**
+   * Where a link points, as the page wrote it. Redaction and normalisation
+   * reduce it to scheme, host and path (`reduceUrl`), so only that part is
+   * hashed, rendered or sent.
+   */
+  readonly url?: string;
   readonly children?: readonly AccessibilityNode[];
 }
 
