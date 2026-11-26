@@ -133,7 +133,11 @@ describe("diffTestFile: weakening", () => {
   it("reports skip-added for a step changed to test.step.skip", () => {
     const before = `test("t", async () => {\n  await test.step("pay", async () => { expect(1).toBe(1); });\n});`;
     const after = before.replace("test.step(", "test.step.skip(");
-    expect(flagged(before, after)).toEqual(["skip-added"]);
+    // The body changed, and its one assertion is expect(1).toBe(1).
+    expect(flagged(before, after)).toEqual([
+      "skip-added",
+      "assertion-cannot-fail",
+    ]);
   });
 
   it("reports skip-added for every test under a skipped describe", () => {
@@ -165,7 +169,11 @@ describe("diffTestFile: weakening", () => {
 
   it("reports only-added on a new test, since it stops every other test", () => {
     const after = `${BASE}\ntest.only("new", () => {});\n`;
-    expect(kinds(BASE, after)).toEqual(["only-added", "test-added"]);
+    expect(kinds(BASE, after)).toEqual([
+      "only-added",
+      "test-added",
+      "test-without-assertion",
+    ]);
   });
 
   it("reports expected-failure-added for test.fail and test.fail()", () => {
@@ -254,7 +262,10 @@ describe("diffTestFile: review", () => {
 
   it("reports a subject replaced by the expected literal", () => {
     const after = BASE.replace("expect(await total(page))", "expect(42)");
-    expect(flagged(BASE, after)).toEqual(["assertion-changed"]);
+    expect(flagged(BASE, after)).toEqual([
+      "assertion-changed",
+      "assertion-cannot-fail",
+    ]);
   });
 
   it("reports a changed test whose title is not a literal", () => {
@@ -309,13 +320,22 @@ describe("diffTestFile: review", () => {
 });
 
 describe("diffTestFile: info and harmless edits", () => {
-  it("reports an added test and an added assertion as info only", () => {
+  it("reports an added test and an added assertion as info", () => {
     const after = BASE.replace(
       "expect(await total(page)).toBe(42);",
       "expect(await total(page)).toBe(42);\n    expect(await tax(page)).toBe(4);",
     ).concat('\ntest("new", () => {});\n');
     expect(diff(BASE, after).map((f) => [f.kind, f.severity])).toEqual([
       ["assertion-added", "info"],
+      ["test-added", "info"],
+      // The new test has an empty body.
+      ["test-without-assertion", "weakening"],
+    ]);
+  });
+
+  it("reports an added test with a real assertion as info only", () => {
+    const after = `${BASE}\ntest("new", async ({ page }) => {\n  await expect(page).toHaveTitle("Shop");\n});\n`;
+    expect(diff(BASE, after).map((f) => [f.kind, f.severity])).toEqual([
       ["test-added", "info"],
     ]);
   });
@@ -371,5 +391,515 @@ describe("diffTestFile: info and harmless edits", () => {
 
   it("finds nothing when nothing changed", () => {
     expect(diff(BASE, BASE)).toEqual([]);
+  });
+});
+
+describe("diffTestFile: new and changed tests that check nothing", () => {
+  function diffIn(
+    file: string,
+    before: string | null,
+    after: string | null,
+  ): Finding[] {
+    return [...diffTestFile({ file, before, after })];
+  }
+
+  /** Kinds for `test` added to BASE, the info ones left out. */
+  function added(test: string, head = ""): string[] {
+    return flagged(BASE, `${head}${BASE}\n${test}\n`);
+  }
+
+  /** One new Playwright test with `body` as its statements. */
+  function playwright(body: string): string {
+    return `test("new", async ({ page, request }) => {\n${body}\n});`;
+  }
+
+  it("reports a new test with no assertion, beside test-added", () => {
+    const after = `${BASE}\n${playwright(`await page.goto("/");\nawait page.getByRole("button").click();`)}\n`;
+    expect(diff(BASE, after)).toEqual([
+      {
+        kind: "test-added",
+        severity: "info",
+        file: "a.spec.ts",
+        test: ["new"],
+        line: 16,
+        message: "test added: new",
+      },
+      {
+        kind: "test-without-assertion",
+        severity: "weakening",
+        file: "a.spec.ts",
+        test: ["new"],
+        line: 16,
+        message:
+          "new has no assertion (no expect, no toSatisfy), so it fails only if a step throws",
+      },
+    ]);
+  });
+
+  it("reports a new test whose assertion cannot fail, at the assertion", () => {
+    const after = `${BASE}\n${playwright(`await page.goto("/");\nexpect(true).toBe(true);`)}\n`;
+    expect(diff(BASE, after)).toMatchObject([
+      { kind: "test-added", line: 16 },
+      {
+        kind: "assertion-cannot-fail",
+        severity: "weakening",
+        test: ["new"],
+        line: 18,
+        message:
+          "new: its only assertion tests a literal, so its outcome does not depend on the code under test",
+      },
+    ]);
+  });
+
+  it("reports a new test whose assertion may be out of sight as review", () => {
+    const after = `${BASE}\n${playwright("await checkCheckout(page);")}\n`;
+    expect(diff(BASE, after)).toMatchObject([
+      {
+        kind: "assertion-not-visible",
+        severity: "review",
+        test: ["new"],
+        line: 16,
+        message:
+          "new has no expect of its own: the assertion may be in code the guard cannot read (checkCheckout())",
+      },
+      { kind: "test-added" },
+    ]);
+  });
+
+  it("reports a new test that only checks its own mock as review", () => {
+    const after = `${BASE}\nit("new", () => {\n  const fn = vi.fn();\n  fn(1);\n  expect(fn).toHaveBeenCalledWith(1);\n});\n`;
+    expect(diff(BASE, after)).toMatchObject([
+      { kind: "test-added" },
+      {
+        kind: "only-checks-mocks",
+        severity: "review",
+        test: ["new"],
+        line: 19,
+        message:
+          "new: every assertion is on a mock the test made and only called itself (fn), so nothing the code under test did is checked",
+      },
+    ]);
+  });
+
+  it.each([
+    ["an empty body", `test("new", () => {});`, "test-without-assertion"],
+    [
+      "an empty Jest or Vitest test",
+      `it("new", () => {});`,
+      "test-without-assertion",
+    ],
+    [
+      "an imported helper",
+      playwright("await checkCheckout(page);"),
+      "assertion-not-visible",
+    ],
+    [
+      "a page-object method",
+      playwright("await new CheckoutPage(page).expectPaid();"),
+      "assertion-not-visible",
+    ],
+    [
+      "node:assert",
+      `it("new", () => { assert.equal(add(1, 1), 2); });`,
+      "assertion-not-visible",
+    ],
+    [
+      "supertest",
+      `it("new", async () => { await request(app).get("/").expect(200); });`,
+      "assertion-not-visible",
+    ],
+    [
+      "a throw by hand",
+      playwright(`if (!(await page.title())) throw new Error("no title");`),
+      "assertion-not-visible",
+    ],
+    [
+      "literal against literal",
+      playwright("expect(1).toEqual(1);"),
+      "assertion-cannot-fail",
+    ],
+    [
+      "a truthy literal",
+      playwright(`expect("a").toBeTruthy();`),
+      "assertion-cannot-fail",
+    ],
+    [
+      "an empty array's length",
+      playwright("expect([]).toHaveLength(0);"),
+      "assertion-cannot-fail",
+    ],
+    [
+      // Changed on purpose, from assertion-cannot-fail: it fails whenever it
+      // is reached, which is how a test marks a line that must not run.
+      "a constant that always fails",
+      playwright("expect(1).toBe(2);"),
+      "assertion-not-visible",
+    ],
+    [
+      "a value compared with itself",
+      playwright(
+        "const total = await page.title();\nexpect(total).toEqual(total);",
+      ),
+      "assertion-cannot-fail",
+    ],
+    [
+      "a property compared with itself",
+      `it("new", () => { expect(user.name).toBe(user.name); });`,
+      "assertion-cannot-fail",
+    ],
+    [
+      "expect.soft on literals",
+      playwright("expect.soft(1).toBe(1);"),
+      "assertion-cannot-fail",
+    ],
+    [
+      ".not on literals",
+      playwright("expect(1).not.toBe(2);"),
+      "assertion-cannot-fail",
+    ],
+    [
+      // Changed on purpose, from assertion-cannot-fail: `.resolves` on a
+      // value that is not a promise fails, so the guard cannot call it safe.
+      ".resolves on literals",
+      playwright("await expect(1).resolves.toBe(1);"),
+      "assertion-not-visible",
+    ],
+    // The next three were silent. Changed on purpose: an empty body is empty
+    // for every row and every title.
+    [
+      "an empty parameterised test",
+      `test.each([1, 2])("new %i", () => {});`,
+      "test-without-assertion",
+    ],
+    [
+      "an empty test under a parameterised describe",
+      `describe.each([1, 2])("group %i", () => {\n  it("new", () => {});\n});`,
+      "test-without-assertion",
+    ],
+    [
+      "an empty test whose title is not a literal",
+      "test(`new ${n}`, () => {});",
+      "test-without-assertion",
+    ],
+    [
+      "a jest mock called by the test",
+      `it("new", () => { const fn = jest.fn(); fn(); expect(fn).toHaveBeenCalled(); });`,
+      "only-checks-mocks",
+    ],
+  ])("flags a new test with %s", (_name, test, expected) => {
+    expect(added(test)).toEqual([expected]);
+  });
+
+  it.each([
+    ["a real assertion", playwright(`await expect(page).toHaveTitle("Shop");`)],
+    [
+      "a value against a literal",
+      `it("new", () => { expect(add(1, 1)).toBe(2); });`,
+    ],
+    [
+      "toSatisfy",
+      playwright(`await expect(page).toSatisfy("The cart is empty");`),
+    ],
+    [
+      "expect.soft",
+      playwright(`expect.soft(page.getByRole("status")).toBeVisible();`),
+    ],
+    [
+      "expect.poll",
+      playwright(`await expect.poll(() => page.title()).toBe("Shop");`),
+    ],
+    [
+      ".resolves",
+      playwright(`await expect(page.title()).resolves.toBe("Shop");`),
+    ],
+    [".not", playwright(`await expect(page).not.toHaveTitle("Error");`)],
+    [
+      "one real assertion among weak ones",
+      playwright(
+        `expect(true).toBe(true);\nexpect(page).toBe(page);\nexpect(await page.title()).toBe("Shop");`,
+      ),
+    ],
+    [
+      "calls compared with each other",
+      `it("new", () => { expect(next()).toBe(next()); });`,
+    ],
+    [
+      "a mock handed to the code under test",
+      `it("new", () => { const onPaid = vi.fn(); pay(order, onPaid); expect(onPaid).toHaveBeenCalled(); });`,
+    ],
+    [
+      "a parameterised test that asserts on constants",
+      `test.each([1, 2])("new %i", () => { expect(1).toBe(1); });`,
+    ],
+    [
+      "a test under a parameterised describe that asserts on constants",
+      `describe.each([1, 2])("group %i", () => {\n  it("new", () => { expect(1).toBe(1); });\n});`,
+    ],
+    ["it.todo", `it.todo("new");`],
+    [
+      "a test whose title is not a literal that asserts on constants",
+      "test(`new ${n}`, () => { expect(true).toBe(true); });",
+    ],
+    // Was test-without-assertion. Changed on purpose: a new skipped test is
+    // reported as added and skipped, and judged when the skip comes off.
+    ["a skipped test with an empty body", `test.fixme("new", async () => {});`],
+    ["it.skip", `it.skip("new", () => {});`],
+    ["xit", `xit("new", () => {});`],
+    [
+      "test.skip() in the body",
+      playwright(`test.skip();\nawait page.goto("/");`),
+    ],
+    [
+      "a test under a skipped describe",
+      `describe.skip("later", () => {\n  it("new", () => {});\n});`,
+    ],
+    [
+      "a test marked as expected to fail",
+      `test.fail("new", async ({ page }) => {\n  await page.goto("/");\n});`,
+    ],
+    [
+      "a test that checks types",
+      `it("new", () => {\n  expectTypeOf(add).toBeFunction();\n});`,
+    ],
+    [
+      "a matcher the project defines, on a literal",
+      `it("new", () => { expect(5).toBeWithinRange(1, 10); });`,
+    ],
+  ])("stays silent on a new test with %s", (_name, test) => {
+    expect(added(test)).toEqual([]);
+  });
+
+  it("looks into a helper in the same file", () => {
+    const helper = `async function expectPaid(page) {\n  await expect(page.getByRole("status")).toHaveText("Paid");\n}\n`;
+    expect(added(playwright("await expectPaid(page);"), helper)).toEqual([]);
+    const plain = `async function open(page) {\n  await page.goto("/");\n}\n`;
+    expect(added(playwright("await open(page);"), plain)).toEqual([
+      "test-without-assertion",
+    ]);
+  });
+
+  it("names the title path of a new test inside nested describes", () => {
+    const after = BASE.replace(
+      '  test("shows the total"',
+      '  test.describe("refund", () => {\n    test("returns the money", async ({ page }) => {\n      await page.goto("/refund");\n    });\n  });\n\n  test("shows the total"',
+    );
+    expect(diff(BASE, after)).toMatchObject([
+      { kind: "test-added", test: ["checkout", "refund", "returns the money"] },
+      {
+        kind: "test-without-assertion",
+        test: ["checkout", "refund", "returns the money"],
+        line: 12,
+        message: expect.stringMatching(
+          /^checkout > refund > returns the money has no assertion /,
+        ) as string,
+      },
+    ]);
+  });
+
+  it("flags every weak test of a new file, sorted", () => {
+    const after = `test("b", () => { expect(1).toBe(1); });\ntest("a", () => {});\n`;
+    expect(diff(null, after).map((f) => [f.line, f.kind])).toEqual([
+      [1, "assertion-cannot-fail"],
+      [1, "test-added"],
+      [2, "test-added"],
+      [2, "test-without-assertion"],
+    ]);
+  });
+
+  it("reads JavaScript and TSX files", () => {
+    expect(
+      diffIn(
+        "a.test.js",
+        null,
+        `it('x', () => { expect(true).toBe(true) })`,
+      ).map((f) => f.kind),
+    ).toEqual(["assertion-cannot-fail", "test-added"]);
+    const tsx = `it("clicks", () => {\n  const onClick = vi.fn();\n  render(<Button onClick={onClick} />);\n  expect(onClick).toHaveBeenCalled();\n});\nit("renders", () => {\n  render(<App />);\n});\n`;
+    expect(
+      diffIn("a.test.tsx", null, tsx).map((f) => [f.line, f.kind]),
+    ).toEqual([
+      [1, "test-added"],
+      [6, "assertion-not-visible"],
+      [6, "test-added"],
+    ]);
+  });
+
+  const WEAK = `test("opens", async ({ page }) => {\n  await page.goto("/");\n});\n\ntest("sums", () => {\n  expect(2).toBe(2);\n});\n`;
+
+  it.each([
+    ["unchanged", WEAK],
+    [
+      "reformatted",
+      WEAK.replace(
+        'await page.goto("/");',
+        "// open\n  await page.goto( '/' );",
+      ),
+    ],
+    [
+      "moved",
+      WEAK.replace(
+        /(test\("opens"[\s\S]*?\n\}\);\n)\n(test\("sums"[\s\S]*?\n\}\);\n)/,
+        "$2\n$1",
+      ),
+    ],
+    [
+      "beside a new, real test",
+      `${WEAK}\ntest("adds", () => { expect(add(1, 1)).toBe(2); });\n`,
+    ],
+  ])("leaves a weak test alone when it is %s", (_name, after) => {
+    expect(flagged(WEAK, after)).toEqual([]);
+  });
+
+  it("leaves a renamed weak test alone when its body is the same", () => {
+    expect(kinds(WEAK, WEAK.replace('"opens"', '"opens the shop"'))).toEqual([
+      "test-renamed",
+    ]);
+  });
+
+  it("flags a weak test that was changed, even if it was as weak before", () => {
+    const after = WEAK.replace('goto("/")', 'goto("/shop")').replace(
+      "expect(2).toBe(2)",
+      "expect(3).toBe(3)",
+    );
+    expect(diff(WEAK, after).map((f) => [f.line, f.kind, f.test])).toEqual([
+      [1, "test-without-assertion", ["opens"]],
+      [5, "assertion-changed", ["sums"]],
+      [6, "assertion-cannot-fail", ["sums"]],
+    ]);
+  });
+
+  it("flags a weak test whose only change is a renamed variable", () => {
+    const before = `it("x", () => {\n  const a = 1;\n  expect(a).toBe(a);\n});\n`;
+    const after = `it("x", () => {\n  const sum = 1;\n  expect(sum).toBe(sum);\n});\n`;
+    expect(kinds(before, after)).toEqual(["assertion-cannot-fail"]);
+  });
+
+  it("flags a test that lost all its assertions twice: for the loss and for the result", () => {
+    const after = BASE.replace(
+      "    expect(await total(page)).toBe(42);\n",
+      "    await total(page);\n",
+    );
+    expect(diff(BASE, after).map((f) => [f.kind, f.severity])).toEqual([
+      ["assertion-not-visible", "review"],
+      ["assertion-removed", "weakening"],
+    ]);
+    const emptied = BASE.replace(
+      "    expect(await total(page)).toBe(42);\n",
+      "",
+    );
+    expect(kinds(BASE, emptied)).toEqual([
+      "assertion-removed",
+      "test-without-assertion",
+    ]);
+  });
+
+  it("flags a test that turned from it.todo into an empty body", () => {
+    expect(kinds(`it.todo("x");`, `it("x", () => {});`)).toEqual([
+      "test-without-assertion",
+    ]);
+  });
+
+  // Both tests below changed on purpose: an emptied body used to pass
+  // unjudged when the title was computed or the test parameterised.
+  it("reports a changed test whose title is not a literal as dynamic-title, and judges an emptied body", () => {
+    const before = "test(`case ${n}`, () => { expect(n).toBe(1); });";
+    const after = "test(`case ${n}`, () => {});";
+    expect(kinds(before, after)).toEqual([
+      "dynamic-title",
+      "test-without-assertion",
+    ]);
+    expect(kinds(null, after)).toEqual([
+      "test-added",
+      "test-without-assertion",
+    ]);
+    // With an assertion left, the title or the loop may make it real.
+    const weaker = "test(`case ${n}`, () => { expect(1).toBe(1); });";
+    expect(kinds(before, weaker)).toEqual(["dynamic-title"]);
+  });
+
+  it("flags a changed parameterised test only when its body is left empty", () => {
+    const before = `test.each([1, 2])("n %i", (n) => { expect(n).toBeGreaterThan(0); });`;
+    const after = `test.each([1, 2])("n %i", (n) => {});`;
+    expect(kinds(before, after)).toEqual([
+      "assertion-removed",
+      "test-without-assertion",
+    ]);
+    const constant = `test.each([1, 2])("n %i", (n) => { expect(n).toBe(n); });`;
+    expect(kinds(before, constant)).toEqual(["assertion-changed"]);
+  });
+
+  it.each([
+    ["a dropped semicolon", `const a = 1;`, `const a = 1`],
+    [
+      "a trailing comma",
+      `const a = [1, 2];`,
+      `const a = [\n    1,\n    2,\n  ];`,
+    ],
+    [
+      "a trailing comma in a call",
+      `console.log("a", "b");`,
+      `console.log(\n    "a",\n    "b",\n  );`,
+    ],
+    [
+      "parentheses around one arrow parameter",
+      `[1].forEach(x => x);`,
+      `[1].forEach((x) => x);`,
+    ],
+    ["a string turned into a template", `const a = "x";`, "const a = `x`;"],
+    ["single quotes", `const a = "x";`, `const a = 'x';`],
+  ])("does not take %s for a change to the test", (_name, was, now) => {
+    const before = `it("t", () => {\n  ${was}\n});\n`;
+    const after = `it("t", () => {\n  ${now}\n});\n`;
+    expect(diff(before, after)).toEqual([]);
+    expect(diff(after, before)).toEqual([]);
+  });
+
+  it.each([
+    ["a changed value", `const a = 1;`, `const a = 2;`],
+    [
+      "a call made into two statements",
+      `const a = f\n  (1)`,
+      `const a = f;\n  (1)`,
+    ],
+    [
+      "a second arrow parameter",
+      `[1].forEach(x => x);`,
+      `[1].forEach((x, i) => x);`,
+    ],
+    [
+      "a template that now reads a value",
+      "const a = `x`;",
+      "const a = `x${1}`;",
+    ],
+    ["an empty for header", `for (;;) break;`, `for (; false; ) break;`],
+  ])("still judges the test after %s", (_name, was, now) => {
+    const before = `it("t", () => {\n  ${was}\n});\n`;
+    const after = `it("t", () => {\n  ${now}\n});\n`;
+    expect(flagged(before, after)).toHaveLength(1);
+    expect(flagged(before, after)[0]).toMatch(
+      /^(test-without-assertion|assertion-not-visible)$/,
+    );
+  });
+
+  it("does not let a formatter's edit hide a skip or a lost assertion", () => {
+    const before = `it("t", () => {\n  expect(add(1, 1)).toBe(2);\n});\n`;
+    expect(
+      kinds(before, before.replace("it(", "it.skip(").replace(";\n}", "\n}")),
+    ).toEqual(["skip-added"]);
+    expect(kinds(before, `it("t", () => {\n  add(1, 1)\n});\n`)).toEqual([
+      "assertion-not-visible",
+      "assertion-removed",
+    ]);
+  });
+
+  it("gives the same findings on every run", () => {
+    const after = `${WEAK}\ntest("c", () => {});\ntest("b", () => { expect(1).toBe(1); });\n`;
+    expect(diff(WEAK, after)).toEqual(diff(WEAK, after));
+    expect(diff(WEAK, after).map((f) => [f.line, f.kind])).toEqual([
+      [9, "test-added"],
+      [9, "test-without-assertion"],
+      [10, "assertion-cannot-fail"],
+      [10, "test-added"],
+    ]);
   });
 });

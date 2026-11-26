@@ -22,6 +22,13 @@ export type FindingKind =
   | "dynamic-title"
   | "cases-changed"
   | "unparseable"
+  // New or changed tests that check nothing.
+  | "test-without-assertion"
+  | "assertion-not-visible"
+  | "assertion-cannot-fail"
+  | "only-checks-mocks"
+  // Paths an agent must not change without a person.
+  | "protected-path-changed"
   // jevy.config.* and playwright.config.*.
   | "threshold-lowered"
   | "needs-review-relaxed"
@@ -61,6 +68,8 @@ export interface GuardReport {
   readonly tool: "jevy-guard";
   readonly base: string;
   readonly head: string;
+  /** The commit compared against, when `--merge-base` replaced `base` with it. */
+  readonly mergeBase?: string;
   readonly summary: GuardSummary;
   readonly findings: readonly Finding[];
 }

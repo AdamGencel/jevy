@@ -1,6 +1,6 @@
 # Build plan — step 2: the guard inside the agent's loop
 
-Status: **not started.** Scope comes from [ROADMAP.md](../ROADMAP.md) step 2 and [DESIGN.md §8.1](../DESIGN.md#81-the-guard-inside-the-agents-loop-step-2). Read `AGENTS.md` first.
+Status: **built, 23 Nov 2026.** What exists is described in [DESIGN.md §7](../DESIGN.md#7-built-the-guard-protected-paths-and-agent-hooks-jevyjscli). This file is kept as the record of the plan; [What changed from the plan](#what-changed-from-the-plan) and [What isitdone and tdd-guard taught us](#what-isitdone-and-tdd-guard-taught-us) at the end say where the build differs and why. Read `AGENTS.md` first.
 
 Why it is next: agents weaken tests when they can, and the guard today only reports that after the fact. This step stops it before the agent finishes, and teaches the guard to see a new test that checks nothing.
 
@@ -78,8 +78,31 @@ At most 40 lines: the exact commands, the rules (never weaken a test; ask before
 - `jevy hook pre-edit` blocks an edit to the config and to a file matched by `protect`.
 - The guard flags a new test with no assertion and one that cannot fail, and stays silent on a normal new test.
 - `--merge-base` gives no finding for a test added on the target branch after the branch point.
-- Lint, typecheck, build and test pass. The README's guard section, DESIGN §7 and §8.1, and the roadmap's status line are updated.
+- Lint, typecheck, build and test pass. The README's guard section, DESIGN §7 (which absorbed the planned §8.1), and the roadmap's status line are updated.
 
 ## Not in this step
 
 `jevy init`, the planner, generator and healer (step 7); the admission check and the plan file (step 6); hooks for agents other than Claude Code, unless they turn out to be the same mechanism.
+
+## What changed from the plan
+
+The two proposals, `protect` and `checks`, were kept as written. `guard.tests` is validated by the loader and may not be empty.
+
+- **Decision records are not reported as protected paths by the guard** (2c). The plan protects the whole cache directory. A test run writes the records, so reporting each new one as weakening would fail every change that adds a model-judged check. The guard still compares them record by record, and the pre-edit hook still blocks an agent that edits one by hand.
+- **Settings are read from the base version of the config** (2b). The plan did not say which version. Reading the head version would let a change move the cache directory or narrow the test globs and benefit in the same run.
+- **The working-tree comparison also covers the index, and the guard refuses a tree it cannot see** (2b). A staged weakening restored on disk, a file flagged `skip-worktree`, an ignored config and an ambiguous ref each ended in "No findings" before.
+- **A third hook, `jevy hook session-start`** (2d). The stop hook compares the branch with the default branch. An agent that commits on the default branch leaves nothing between the two, so the stop hook also compares the session with the commit it started on, which this hook records.
+- **The stop hook has an overall deadline** (2d). Claude Code lets the agent proceed when a hook times out, so a hung check was a way through.
+- **A parameterised test, or one with a non-literal title, is still checked for having no assertion** (2a). The plan said not to fire on either. `it.each([0])` or a computed title then silenced an empty test with one token. The cannot-fail and only-mocks rules are still not applied to them.
+- **The printed settings call `./node_modules/.bin/jevy`, not `npx`** (2d). `npx --no-install` still asked the npm registry for a package named `jevy`.
+- **Protected-path matching ignores case and Unicode form** (2c), because macOS and Windows disks do.
+
+Not done, and listed as known limits in the README: a test weakened inside a git submodule; a config in another directory of a monorepo than the one the guard runs in; an edit hidden from git by a forged file timestamp (`core.trustctime false`), which would need the guard to hash files itself.
+
+## What isitdone and tdd-guard taught us
+
+Looked at on 23 Nov 2026.
+
+- **isitdone** is the closer of the two: a stop hook that runs the project's checks, scans the diff for weakened tests, and writes a signed receipt. Copied: the attempt cap with a plain "gave up" message to the person, and honouring `stop_hook_active`. Different: its scan is line-and-regex over the diff, where the guard compares syntax trees and matches tests by identity, so a reformat or a rename is not a finding. Its receipt is signed with a key kept beside it in the repository, so it proves nothing against the agent; Jevy's proof file is step 8 and its approvals step 10. It does not look for assertions that cannot fail or tests that only check mocks.
+- **tdd-guard** enforces test-first with a model call on every edit. Jevy's hooks call no model, so they cost nothing and cannot block on a malformed reply, which is tdd-guard's main open issue. Its documentation states the limit both tools share: a shell command bypasses a pre-edit hook. Jevy answers that with the guard at stop time and in CI.
+- Worth a later look: binding a pass to a hash of the tree and of the check configuration, so a loosened gate shows as stale (step 8); scanning CI files for neutered test steps (`|| true`, `--passWithNoTests`); a `doctor` command that proves the hooks block (step 7, with `jevy init`).

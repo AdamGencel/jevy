@@ -382,3 +382,217 @@ async function tempDir(): Promise<string> {
   directories.push(dir);
   return dir;
 }
+
+// glob-table:start
+// The same table, character for character, is in
+// packages/core/src/config.test.ts and packages/cli/src/guard/glob.test.ts.
+// Core's loader (`assertGlob`) and the CLI's matcher (`checkGlob`) cannot
+// import one another, so each restates the rule and each is tested against
+// this table. Change both copies together: a glob the loader accepts and the
+// matcher refuses makes the guard and the hooks fail on a valid config.
+const GLOB_TABLE = {
+  accepted: [
+    "tests/**",
+    "**/*.spec.ts",
+    "docs/plan.md",
+    "./tests/critical/",
+    "**/*.{spec,test}.{ts,tsx}",
+    "a?c",
+    "**",
+    "x/{a,}/y",
+    "a/./b",
+    "a//b",
+    ".jevy/**",
+    "app/(marketing)/**",
+    "tests/my dir/*.ts",
+    "a+b$^.ts",
+    "{a,b}".repeat(8),
+  ],
+  rejected: [
+    "",
+    " ",
+    " tests/**",
+    "tests/** ",
+    "\ttests/**",
+    "!tests/**",
+    "./!x",
+    "{!a,b}",
+    "/abs/path",
+    "{/etc,a}",
+    "C:/x",
+    "C:x",
+    "./C:x",
+    "C:\\tests",
+    "a\\b",
+    "../outside",
+    "a/../b",
+    "{..,a}/x",
+    "tests/[ab]/**",
+    "src/[id]/**",
+    "a]",
+    "a/{b,{c,d}}",
+    "{a",
+    "a/{b,c",
+    "a/b}",
+    "a**b",
+    "a/**.ts",
+    ".",
+    "./",
+    "{tests,}",
+    "tests/*.@(spec|test).ts",
+    "tests/+(a|b)",
+    "a/?(b)",
+    "a/*(b)",
+    "a/!(b)",
+    "a|b",
+    "{a,b}".repeat(9),
+  ],
+} as const;
+// glob-table:end
+
+describe("guard settings: protect, checks and guard.tests", () => {
+  it("defaults to nothing protected, no checks and the built-in test globs", () => {
+    const config = parseConfig({}, { env: {} });
+    expect(config.protect).toEqual([]);
+    expect(config.checks).toEqual([]);
+    expect(config.guard).toEqual({ tests: null });
+  });
+
+  it("keeps the lists as written", () => {
+    const config = parseConfig(
+      {
+        protect: ["tests/critical/**", "docs/test-plan.md"],
+        checks: ["pnpm lint", "pnpm typecheck", "pnpm test"],
+        guard: { tests: ["e2e/**/*.ts", "**/*.spec.ts"] },
+      },
+      { env: {} },
+    );
+    expect(config.protect).toEqual(["tests/critical/**", "docs/test-plan.md"]);
+    expect(config.checks).toEqual(["pnpm lint", "pnpm typecheck", "pnpm test"]);
+    expect(config.guard).toEqual({ tests: ["e2e/**/*.ts", "**/*.spec.ts"] });
+  });
+
+  it("accepts the keys through defineConfig", () => {
+    const defined = defineConfig({
+      protect: ["tests/**"],
+      checks: ["pnpm test"],
+      guard: { tests: ["**/*.spec.ts"] },
+    });
+    expect(parseConfig(defined, { env: {} }).protect).toEqual(["tests/**"]);
+  });
+
+  it("rejects a list that is not an array of non-empty strings", () => {
+    const bad: readonly [unknown, string][] = [
+      [{ protect: "tests/**" }, "protect must be an array"],
+      [{ protect: [""] }, "protect[0] must be a non-empty string"],
+      [{ protect: [7] }, "protect[0] must be a non-empty string"],
+      [{ checks: "pnpm test" }, "checks must be an array"],
+      [{ checks: ["pnpm test", " "] }, "checks[1] must be a non-empty string"],
+      [{ guard: [] }, "guard must be an object"],
+      [{ guard: { tests: "**/*.spec.ts" } }, "guard.tests must be an array"],
+      [
+        { guard: { tests: [null] } },
+        "guard.tests[0] must be a non-empty string",
+      ],
+    ];
+    for (const [input, message] of bad) {
+      expect(() => parseConfig(input, { env: {} })).toThrow(ConfigError);
+      expect(() => parseConfig(input, { env: {} })).toThrow(message);
+    }
+  });
+
+  it("rejects a glob it could not honour, so nothing is silently unprotected", () => {
+    const bad: readonly [unknown, string][] = [
+      [{ protect: ["!tests/open/**"] }, "protect[0] must not start with '!'"],
+      [{ protect: ["/etc/passwd"] }, "protect[0] must be relative"],
+      [{ protect: ["C:\\tests"] }, "protect[0] must use forward slashes"],
+      [{ protect: ["../other/**"] }, "protect[0] must stay inside the project"],
+      [
+        { protect: ["tests/../../x"] },
+        "protect[0] must stay inside the project",
+      ],
+      [{ guard: { tests: ["!x"] } }, "guard.tests[0] must not start with '!'"],
+      [
+        { guard: { tests: ["../x"] } },
+        "guard.tests[0] must stay inside the project",
+      ],
+    ];
+    for (const [input, message] of bad) {
+      expect(() => parseConfig(input, { env: {} })).toThrow(ConfigError);
+      expect(() => parseConfig(input, { env: {} })).toThrow(message);
+    }
+  });
+
+  it("agrees with the table of globs it shares with the CLI's matcher", () => {
+    for (const glob of GLOB_TABLE.accepted) {
+      expect(
+        parseConfig({ protect: [glob], guard: { tests: [glob] } }, { env: {} })
+          .protect,
+        glob,
+      ).toEqual([glob]);
+    }
+    for (const glob of GLOB_TABLE.rejected) {
+      expect(() => parseConfig({ protect: [glob] }, { env: {} }), glob).toThrow(
+        ConfigError,
+      );
+      expect(
+        () => parseConfig({ guard: { tests: [glob] } }, { env: {} }),
+        glob,
+      ).toThrow(ConfigError);
+    }
+  });
+
+  it("says what is wrong with a glob the CLI's matcher would refuse", () => {
+    const bad: readonly [string, string][] = [
+      [" tests/**", "protect[0] must not start or end with whitespace"],
+      ["tests/** ", "protect[0] must not start or end with whitespace"],
+      ["./!x", "protect[0] must not start with '!'"],
+      ["{!a,b}", "protect[0] must not start with '!'"],
+      ["{/etc,a}", "protect[0] must be relative"],
+      ["C:/x", "protect[0] must be relative"],
+      ["C:x", "protect[0] must be relative"],
+      ["{..,a}/x", "protect[0] must stay inside the project"],
+      ["tests/[ab]/**", "protect[0] must not use a character class"],
+      ["a]", "protect[0] must not use a character class"],
+      ["a/{b,{c,d}}", "protect[0] must not nest braces"],
+      ["{a", "protect[0] has unbalanced braces"],
+      ["a/b}", "protect[0] has unbalanced braces"],
+      ["a**b", "protect[0] must use ** as a whole path segment"],
+      [".", "protect[0] names no path"],
+      ["{tests,}", "protect[0] names no path"],
+      ["tests/*.@(spec|test).ts", "protect[0] must not use an extended glob"],
+      ["tests/+(a|b)", "protect[0] must not use an extended glob"],
+      ["a|b", "protect[0] must not contain '|'"],
+      ["{a,b}".repeat(9), "protect[0] expands to more than 256 alternatives"],
+    ];
+    for (const [glob, message] of bad) {
+      expect(() => parseConfig({ protect: [glob] }, { env: {} }), glob).toThrow(
+        message,
+      );
+    }
+  });
+
+  it("rejects an empty guard.tests, which would compare no test file at all", () => {
+    expect(() => parseConfig({ guard: { tests: [] } }, { env: {} })).toThrow(
+      "guard.tests must list at least one glob",
+    );
+  });
+
+  it("rejects unknown keys under guard", () => {
+    expect(() =>
+      parseConfig({ guard: { test: ["**/*.spec.ts"] } }, { env: {} }),
+    ).toThrow("guard has unknown keys: test");
+  });
+
+  it("does not treat a check command as a pasted secret", () => {
+    const config = parseConfig(
+      {
+        checks: [
+          "pnpm --filter @acme/web exec playwright test --reporter=line",
+        ],
+      },
+      { env: {} },
+    );
+    expect(config.checks).toHaveLength(1);
+  });
+});

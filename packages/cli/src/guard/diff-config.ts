@@ -34,14 +34,25 @@ interface Entry {
 }
 
 /** Top-level keys compared as a whole rather than property by property. */
-const WHOLE_KEYS = new Set(["redact", "normalise", "decider", "deciders"]);
+const WHOLE_KEYS = new Set([
+  "redact",
+  "normalise",
+  "decider",
+  "deciders",
+  "protect",
+]);
 
-const WHOLE_KEY_KINDS: Readonly<Record<string, FindingKind>> = {
-  redact: "redaction-rules-changed",
-  normalise: "normalise-rules-changed",
-  decider: "decider-changed",
-  deciders: "decider-changed",
-};
+/**
+ * A Map, not an object: the key looked up is a property name from the
+ * repository's config. In an object, `__proto__` or `constructor` would find
+ * what every object inherits and come back as a "kind" that is no kind.
+ */
+const WHOLE_KEY_KINDS: ReadonlyMap<string, FindingKind> = new Map([
+  ["redact", "redaction-rules-changed"],
+  ["normalise", "normalise-rules-changed"],
+  ["decider", "decider-changed"],
+  ["deciders", "decider-changed"],
+]);
 
 /** Playwright settings that decide which tests run at all. */
 const SELECTION_KEYS = [
@@ -124,7 +135,14 @@ function isModuleExports(node: ts.Expression): boolean {
   );
 }
 
-/** The default-exported object, else the argument of the first `defineConfig`. */
+/**
+ * The default-exported object, else the argument of the first `defineConfig`.
+ *
+ * This finder is generous on purpose: the diff wants an object to compare
+ * whenever there is one, and reports everything outside it as changed code.
+ * `config-source.ts` reads settings that decide what is protected, so it has
+ * a stricter finder of its own and does not use this one.
+ */
 function findConfigObject(
   sourceFile: ts.SourceFile,
 ): ts.ObjectLiteralExpression | null {
@@ -232,16 +250,16 @@ function readJevyConfig(text: string, file: string): ConfigRead {
  * config.ts). Removing `pr: "fail"` therefore relaxes it to "warn". The
  * default for `main` is "fail", so removing that relaxes nothing.
  */
-const NEEDS_REVIEW_DEFAULTS: Readonly<Record<string, string>> = {
-  "ci.needsReview.pr": '"warn"',
-};
+const NEEDS_REVIEW_DEFAULTS: ReadonlyMap<string, string> = new Map([
+  ["ci.needsReview.pr", '"warn"'],
+]);
 
 function needsReviewAfter(
   path: string,
   after: Entry | undefined,
 ): string | null {
   return after === undefined
-    ? (NEEDS_REVIEW_DEFAULTS[path] ?? null)
+    ? (NEEDS_REVIEW_DEFAULTS.get(path) ?? null)
     : after.literal;
 }
 
@@ -267,9 +285,24 @@ function classifyEntry(
     after: after?.display,
   };
   const top = path.split(".")[0] ?? path;
-  const wholeKind = WHOLE_KEY_KINDS[top];
+  const wholeKind = WHOLE_KEY_KINDS.get(top);
   if (wholeKind !== undefined) {
     return finding({ ...shown, kind: wholeKind, message: `${top} changed` });
+  }
+  const verb =
+    before === undefined
+      ? "added"
+      : after === undefined
+        ? "removed"
+        : "changed";
+  if (top === "protect") {
+    // The list of paths an agent must not touch is itself one of them: a
+    // shorter list unprotects files without changing any of them.
+    return finding({
+      ...shown,
+      kind: "protected-path-changed",
+      message: `protect ${verb}`,
+    });
   }
   if (path === "thresholds.pass") {
     const was = numberOf(before);
@@ -297,12 +330,6 @@ function classifyEntry(
       message: `${path} relaxed from "fail" to "warn"${removed}`,
     });
   }
-  const verb =
-    before === undefined
-      ? "added"
-      : after === undefined
-        ? "removed"
-        : "changed";
   return finding({
     ...shown,
     kind: "config-changed",
@@ -318,6 +345,32 @@ function unreadable(file: string, side: string, reason: string): Finding {
   });
 }
 
+/**
+ * Run one file's comparison, turning anything it throws into a finding.
+ *
+ * The TypeScript parser and the walks over its tree recurse, so a config
+ * nested twenty thousand deep overflows the stack. That must not end the
+ * guard: the other files would go unreported. Nothing is known about such a
+ * file, so it is reported for review like any other the guard cannot read.
+ */
+function analysed(
+  file: string,
+  compare: () => readonly Finding[],
+): readonly Finding[] {
+  try {
+    return compare();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return [
+      finding({
+        file,
+        kind: "config-changed",
+        message: `the change could not be analysed (${reason}); review it by hand`,
+      }),
+    ];
+  }
+}
+
 /** `0.8` equals `0.80` and `'fail'` equals `"fail"`; anything else compares as code. */
 function sameValue(a: Entry, b: Entry): boolean {
   return a.literal !== null && b.literal !== null
@@ -329,8 +382,12 @@ function sameText(change: ConfigFileChange): boolean {
   return change.before === change.after;
 }
 
-/** Findings for one `jevy.config.*` file. */
+/** Findings for one `jevy.config.*` file. Never throws (see `analysed`). */
 export function diffJevyConfig(change: ConfigFileChange): readonly Finding[] {
+  return analysed(change.file, () => compareJevyConfig(change));
+}
+
+function compareJevyConfig(change: ConfigFileChange): readonly Finding[] {
   const { file, before, after } = change;
   if (sameText(change)) {
     return [];
@@ -519,10 +576,15 @@ function diffSelection(
 /**
  * Findings for one `playwright.config.*` file: raised retries (a flaky
  * test then passes on a later attempt) and changes to which tests run.
+ * Never throws (see `analysed`).
  */
 export function diffPlaywrightConfig(
   change: ConfigFileChange,
 ): readonly Finding[] {
+  return analysed(change.file, () => comparePlaywrightConfig(change));
+}
+
+function comparePlaywrightConfig(change: ConfigFileChange): readonly Finding[] {
   const { file } = change;
   if (sameText(change)) {
     return [];

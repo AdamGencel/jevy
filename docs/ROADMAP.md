@@ -1,6 +1,6 @@
 # Jevy — Roadmap
 
-Status: **the toolchain and step 1 are done. Step 2 is next.** Jevy is a personal project with one maintainer (Adam Gencel). No step has a date: each one lists what it delivers and how we know it is done.
+Status: **the toolchain and steps 1 and 2 are done. Step 3 is next, and step 5 can be built beside it.** Jevy is a personal project with one maintainer (Adam Gencel). No step has a date: each one lists what it delivers and how we know it is done.
 
 ## Direction
 
@@ -38,17 +38,19 @@ Five work packages. They do not depend on a model or on the network. Each was bu
 | 1d | Snapshot source | Turns Playwright's `ariaSnapshot()` output into the tree core expects, and blanks secret fields. Findings are in `docs/spikes/`. |
 | 1e | Guard | `jevy guard --base <ref>` compares tests, config and cached decisions between two commits and reports weakening. No model call. |
 
-### Step 2 — The guard inside the agent's loop
+### Step 2 — The guard inside the agent's loop (done, 23 Nov 2026)
 
-Today the guard reports a weakened test after the fact. This step stops it earlier, and widens what the guard sees. The build plan is in [plans/step-2.md](plans/step-2.md).
+The guard used to report a weakened test after the fact. This step stops it inside the agent's session and widens what the guard sees. Five work packages, each built test-first and then reviewed independently; every reviewer found real defects, and the fixes are in. What they built is described in DESIGN.md §7, and the build plan, with what changed from it, is in [plans/step-2.md](plans/step-2.md).
 
-- **Hooks for coding agents.** A stop hook that runs the project's real test, type-check and lint commands, plus `jevy guard`, before the agent may say it is done. A pre-edit hook that blocks or flags edits to protected paths. Claude Code first; other agents where they offer hooks.
-- **Protected paths.** A project lists what an agent must not change without a person: test plans, the Jevy config, the decision cache, and any tests it chooses. The guard treats a change there as weakening.
-- **Weak new tests.** The guard also flags a new test with no assertion, an assertion that can never fail, and a test that only checks its own mocks.
-- **A short skill file.** The exact commands and the rules, in a few lines. Long instruction files cost more and help less.
-- **Guard items carried from step 1:** a merge-base option, configurable test globs, and reading the cache directory from the config.
-- Before building: look at isitdone and tdd-guard, which the research names as the closest existing tools.
-- Done when: in a fixture repo, an agent session cannot finish with a deleted assertion or an added skip without the hook stopping it; the guard flags an assertion-free new test; and a clean change passes with no finding.
+| # | Package | Delivers |
+|---|---|---|
+| 2a | Weak new tests | The guard flags a new or changed test with no assertion, or whose every assertion cannot fail, as weakening. A test whose assertion may be in a helper it cannot read, or that only checks its own mocks, is flagged for review. |
+| 2b | Guard options | `--merge-base`; test globs from `--tests` and `guard.tests`; the cache directory from the config; settings read from the base version of the config, so a change cannot redefine what it is checked against. The working-tree comparison also covers the index. |
+| 2c | Protected paths | The `protect` config key. The Jevy config, the decision cache and the wallet policy are always protected. A change to a protected path is weakening. |
+| 2d | Hooks for Claude Code | `jevy hook stop` runs the project's `checks` and the guard before the agent may finish, and gives up after two blocked attempts for the same reason. `jevy hook pre-edit` blocks an edit to a protected path. `jevy hook session-start` records where the session began. `jevy hook print --agent claude` prints the settings. |
+| 2e | Skill file | The exact commands and the rules in 30 lines, shipped in `@jevyjs/cli`. |
+
+Hooks for agents other than Claude Code are not built. They follow where an agent offers an equivalent.
 
 ### Step 3 — First end-to-end slice
 
@@ -155,7 +157,7 @@ How each test has behaved over time: passes, failures, flakes, durations, verdic
 - Setup guide, demo videos, npm publish with provenance, `"private": true` removed.
 - Open questions 4 and 5 have written answers from TypeSafe recorded in OPEN-QUESTIONS.
 
-**Order.** Step 2 can start now. Steps 3 and 5 can run side by side. Step 4 follows step 3 whenever network access and a model key are available. Steps 6, 7, 8 and 9 follow in that order. Steps 10, 11 and 12 can run in parallel once step 3 is done. Step 13 follows step 6.
+**Order.** Steps 3 and 5 can start now and run side by side. Step 4 follows step 3 whenever network access and a model key are available. Steps 6, 7, 8 and 9 follow in that order. Steps 10, 11 and 12 can run in parallel once step 3 is done. Step 13 follows step 6.
 
 ## Later or unscheduled
 

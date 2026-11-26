@@ -7,11 +7,18 @@ import type {
   Severity,
 } from "./types.js";
 
-/** Build the versioned report. Findings are sorted here, whatever their order. */
+/**
+ * Build the versioned report. Findings are sorted here, whatever their order.
+ *
+ * `base` is always the ref the user gave. `mergeBase` is the commit that was
+ * compared against in its place under `--merge-base`; without it the key is
+ * left out, so the JSON is what it was before the flag existed.
+ */
 export function buildReport(
   base: string,
   head: string,
   findings: readonly Finding[],
+  mergeBase?: string,
 ): GuardReport {
   const count = (severity: Severity): number =>
     findings.filter((finding) => finding.severity === severity).length;
@@ -20,6 +27,7 @@ export function buildReport(
     tool: "jevy-guard",
     base,
     head,
+    ...(mergeBase === undefined ? {} : { mergeBase }),
     summary: {
       weakening: count("weakening"),
       review: count("review"),
@@ -44,18 +52,36 @@ const ESCAPES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Whether a terminal acts on `code` instead of drawing it: the C0 and C1
+ * controls and DEL (U+0085 is a line break, U+009B starts an escape
+ * sequence), the line and paragraph separators, and the bidirectional
+ * controls, which reorder the text around them or hide it.
+ */
+function isControl(code: number): boolean {
+  return (
+    code < 0x20 ||
+    (code >= 0x7f && code <= 0x9f) ||
+    code === 0x061c ||
+    code === 0x200e ||
+    code === 0x200f ||
+    (code >= 0x2028 && code <= 0x202e) ||
+    (code >= 0x2066 && code <= 0x2069)
+  );
+}
+
+/**
  * File names, titles and decision lines come from the repository under
- * check. Escaping control characters keeps one finding on one line, so a
- * crafted name cannot print a fake summary or clear the terminal line.
+ * check. Escaping control characters keeps one finding on one line and in
+ * the order it was written, so a crafted name cannot print a fake summary,
+ * clear the terminal line, or show its text reversed.
  */
 function printable(text: string): string {
   let out = "";
   for (const char of text) {
     const code = char.charCodeAt(0);
-    out +=
-      code < 0x20 || code === 0x7f
-        ? (ESCAPES[char] ?? `\\u${code.toString(16).padStart(4, "0")}`)
-        : char;
+    out += isControl(code)
+      ? (ESCAPES[char] ?? `\\u${code.toString(16).padStart(4, "0")}`)
+      : char;
   }
   return out;
 }
@@ -68,8 +94,12 @@ function indentDetail(label: string, text: string | undefined): string[] {
 
 /** Human output: one block per file, one line per finding. */
 export function formatHuman(report: GuardReport): string {
+  const against =
+    report.mergeBase === undefined
+      ? ""
+      : ` (merge base ${printable(report.mergeBase)})`;
   const lines = [
-    `jevy guard: ${printable(report.base)}..${printable(report.head)}`,
+    `jevy guard: ${printable(report.base)}..${printable(report.head)}${against}`,
     "",
   ];
   if (report.findings.length === 0) {
